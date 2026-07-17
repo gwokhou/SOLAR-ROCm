@@ -21,6 +21,8 @@ unknown node types dynamically, following Google's Python style guide.
 
 import os
 import json
+import ast
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -33,10 +35,11 @@ except ImportError:  # pragma: no cover
 # Optional OpenAI client class (OpenAI SDK v1+). Tests patch this symbol.
 OpenAI = getattr(openai, "OpenAI", None) if openai is not None else None
 
+
 @dataclass
 class AgentConfig:
     """Configuration for the LLM agent.
-    
+
     Attributes:
         api_key: OpenAI API key.
         model: Model to use (default: gpt-4).
@@ -44,93 +47,132 @@ class AgentConfig:
         max_tokens: Maximum tokens in response.
         cache_dir: Directory for caching generated handlers.
     """
+
     api_key: str
     model: str = "gpt-4"
     temperature: float = 0.2
     max_tokens: int = 2000
     cache_dir: str = "./llm_handlers_cache"
+    fail_closed: bool = True
 
 
 class NodeTypeConversionAgent:
     """LLM agent for converting unknown node types to known operations.
-    
+
     This agent uses an LLM to generate code that converts unknown node types
     into subgraphs of known operations.
     """
-    
+
     def __init__(self, config: AgentConfig):
         """Initialize the conversion agent.
-        
+
         Args:
             config: Agent configuration.
         """
         self.config = config
         self._init_openai()
         self._ensure_cache_dir()
-    
+
     def _init_openai(self) -> None:
         """Initialize OpenAI client."""
         if openai is None:
-            raise ImportError("OpenAI library not installed. Install with: pip install openai")
+            raise ImportError(
+                "OpenAI library not installed. Install with: pip install openai"
+            )
 
             openai.api_key = self.config.api_key
         self.client = openai
-    
+
     def _ensure_cache_dir(self) -> None:
         """Ensure cache directory exists."""
         Path(self.config.cache_dir).mkdir(parents=True, exist_ok=True)
-    
-    def generate_conversion_code(self,
-                                node_type: str,
-                                sample_node_data: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+
+    def generate_conversion_code(
+        self, node_type: str, sample_node_data: Dict[str, Any]
+    ) -> Tuple[str, Dict[str, Any]]:
         """Generate conversion code for an unknown node type.
-        
+
         Args:
             node_type: The unknown node type.
             sample_node_data: Sample data for the node type.
-            
+
         Returns:
             Tuple of (generated_code, metadata).
         """
         # Check cache first
         cached_code = self._check_cache(node_type)
         if cached_code:
-            return cached_code, {"source": "cache", "is_fallback": False}
-        
+            try:
+                from solar.verification import verify_generated_handler
+
+                verification = verify_generated_handler(
+                    node_type, cached_code, sample_node_data
+                )
+                return cached_code, {
+                    "source": "cache",
+                    "is_fallback": False,
+                    "verification": "passed",
+                    "verification_details": verification,
+                    "source_sha256": hashlib.sha256(cached_code.encode()).hexdigest(),
+                }
+            except Exception as exc:
+                if self.config.fail_closed:
+                    raise RuntimeError(
+                        f"cached handler failed numerical revalidation for "
+                        f"{node_type}: {exc}"
+                    ) from exc
+
         # Generate prompt
         prompt = self._create_conversion_prompt(node_type, sample_node_data)
-        
+
         try:
             # Call LLM
             response = self._call_llm(prompt)
             code = self._extract_code(response)
-            
-            # Validate and clean code
+
+            # Structural checks happen before any generated code is executed.
             code = self._validate_code(code, node_type)
-            
-            # Cache the result
+
+            # A generated expansion is executable code and a semantic claim.
+            # It becomes cacheable only after the in-repo numerical verifier
+            # compares it with the actual PyTorch operator on independent cases.
+            from solar.verification import verify_generated_handler
+
+            verification = verify_generated_handler(node_type, code, sample_node_data)
             self._cache_code(node_type, code)
-            
-            return code, {"source": "generated", "is_fallback": False}
-                
+
+            return code, {
+                "source": "generated",
+                "is_fallback": False,
+                "verification": "passed",
+                "source_sha256": hashlib.sha256(code.encode()).hexdigest(),
+                "verification_details": verification,
+            }
+
         except Exception as e:
             print(f"LLM generation failed: {e}")
-            # Return fallback implementation
+            if self.config.fail_closed:
+                raise RuntimeError(
+                    f"no numerically verified handler for {node_type}: {e}"
+                ) from e
+            # Legacy exploratory mode may return a conspicuously marked
+            # fallback, but it is never cached or eligible for official SOL.
             return self._generate_fallback(node_type), {
                 "source": "fallback",
                 "is_fallback": True,
-                "error": str(e)
+                "verification": "failed",
+                "error": str(e),
             }
-    
-    def _create_conversion_prompt(self,
-                      node_type: str,
-                      sample_node_data: Dict[str, Any]) -> str:
+
+    def _create_conversion_prompt(
+        self, node_type: str, sample_node_data: Dict[str, Any]
+    ) -> str:
         """Create prompt for the LLM.
-        
+
         Args:
             node_type: The unknown node type.
             sample_node_data: Sample data for the node.
-            
+
         Returns:
             Formatted prompt string.
         """
@@ -227,19 +269,21 @@ def create_{node_type}_subgraph(node_id: str, node_data: Dict[str, Any]) -> Dict
 ```
 
 Generate only the function code, no explanations."""
-    
+
     def _call_llm(self, prompt: str) -> str:
         """Call the LLM API.
-        
+
         Args:
             prompt: The prompt to send.
-            
+
         Returns:
             LLM response text.
         """
         try:
             # New-style client: client.chat.completions.create(...)
-            if hasattr(self.client, "chat") and hasattr(self.client.chat, "completions"):
+            if hasattr(self.client, "chat") and hasattr(
+                self.client.chat, "completions"
+            ):
                 response = self.client.chat.completions.create(
                     model=self.config.model,
                     messages=[{"role": "user", "content": prompt}],
@@ -251,34 +295,34 @@ Generate only the function code, no explanations."""
             # Legacy: openai.ChatCompletion.create(...)
             if hasattr(self.client, "ChatCompletion"):
                 response = self.client.ChatCompletion.create(
-                model=self.config.model,
+                    model=self.config.model,
                     messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
+                    temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
-            )
+                )
             return response.choices[0].message.content
-            
+
             # Fallback: create a new client if available.
             if OpenAI is not None:
                 client = OpenAI(api_key=self.config.api_key)
                 response = client.chat.completions.create(
-                model=self.config.model,
+                    model=self.config.model,
                     messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.temperature,
+                    temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens,
-            )
+                )
                 return response.choices[0].message.content
-            
+
             raise RuntimeError("OpenAI client is not available")
         except Exception as e:
             raise RuntimeError(f"LLM API call failed: {e}")
-    
+
     def _extract_code(self, response: str) -> str:
         """Extract code from LLM response.
-        
+
         Args:
             response: Raw LLM response.
-            
+
         Returns:
             Extracted code.
         """
@@ -289,40 +333,59 @@ Generate only the function code, no explanations."""
             code = response.split("```")[1].split("```")[0]
         else:
             code = response
-        
+
         return code.strip()
-    
+
     def _validate_code(self, code: str, node_type: str) -> str:
         """Validate and clean generated code.
-        
+
         Args:
             code: Generated code.
             node_type: Node type name.
-            
+
         Returns:
             Validated code.
         """
         # Basic validation - check if it's a valid function
         if not code.startswith("def "):
             raise ValueError("Generated code is not a valid function")
-            
+
+        tree = ast.parse(code)
+        banned_nodes = (
+            ast.Import,
+            ast.ImportFrom,
+            ast.Global,
+            ast.Nonlocal,
+            ast.With,
+            ast.AsyncWith,
+            ast.Try,
+            ast.Raise,
+            ast.ClassDef,
+        )
+        if any(isinstance(node, banned_nodes) for node in ast.walk(tree)):
+            raise ValueError("Generated handler contains forbidden Python constructs")
+        banned_calls = {"eval", "exec", "compile", "open", "__import__"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in banned_calls:
+                    raise ValueError(
+                        f"Generated handler calls forbidden {node.func.id}"
+                    )
+
         # Check function name
         expected_name = f"create_{node_type}_subgraph"
         if expected_name not in code:
             # Try to fix the function name
-            code = code.replace(
-                code.split("(")[0].replace("def ", ""),
-                expected_name
-            )
-        
+            code = code.replace(code.split("(")[0].replace("def ", ""), expected_name)
+
         return code
-    
+
     def _generate_fallback(self, node_type: str) -> str:
         """Generate fallback implementation.
-        
+
         Args:
             node_type: Node type name.
-            
+
         Returns:
             Fallback code.
         """
@@ -342,61 +405,78 @@ Generate only the function code, no explanations."""
     }}
     
     return subgraph"""
-    
+
     def _check_cache(self, node_type: str) -> Optional[str]:
         """Check if code is cached.
-    
-    Args:
-            node_type: Node type to check.
-        
-    Returns:
-            Cached code if found, None otherwise.
-    """
+
+        Args:
+                node_type: Node type to check.
+
+        Returns:
+                Cached code if found, None otherwise.
+        """
         cache_file = Path(self.config.cache_dir) / f"{node_type}.py"
-        if cache_file.exists():
-            return cache_file.read_text()
+        proof_file = Path(self.config.cache_dir) / f"{node_type}.verified.json"
+        if cache_file.exists() and proof_file.exists():
+            proof = json.loads(proof_file.read_text())
+            digest = hashlib.sha256(cache_file.read_bytes()).hexdigest()
+            if proof.get("status") == "passed" and proof.get("source_sha256") == digest:
+                return cache_file.read_text()
         return None
-    
+
     def _cache_code(self, node_type: str, code: str) -> None:
         """Cache generated code.
-        
+
         Args:
             node_type: Node type name.
             code: Code to cache.
         """
         cache_file = Path(self.config.cache_dir) / f"{node_type}.py"
         cache_file.write_text(code)
+        proof_file = Path(self.config.cache_dir) / f"{node_type}.verified.json"
+        proof_file.write_text(
+            json.dumps(
+                {
+                    "status": "passed",
+                    "verifier": "solar.generated_handler.v1",
+                    "source_sha256": hashlib.sha256(code.encode()).hexdigest(),
+                },
+                indent=2,
+            )
+        )
 
 
 def get_api_key_interactive() -> str:
     """Get API key interactively from user.
-            
-        Returns:
-        API key string.
-        """
-    print("\nTo use the LLM agent for unknown node types, an OpenAI API key is required.")
+
+    Returns:
+    API key string.
+    """
+    print(
+        "\nTo use the LLM agent for unknown node types, an OpenAI API key is required."
+    )
     print("You can get one at: https://platform.openai.com/api-keys")
     print("\nOptions:")
     print("1. Enter your API key now (recommended)")
     print("2. Set the OPENAI_API_KEY environment variable")
     print("3. Disable the agent and use only built-in handlers")
-    
+
     api_key = input("\nEnter your OpenAI API key (or press Enter to skip): ").strip()
-            
+
     if not api_key:
         print("\nNo API key provided. Agent will be disabled.")
         return ""
-    
+
     # Validate format (basic check)
     if not api_key.startswith("sk-"):
         print("\nWarning: API key doesn't start with 'sk-'. It might be invalid.")
-    
+
     # Offer to save to environment
     save = input("\nSave API key to .env file for future use? (y/n): ").strip().lower()
-    if save == 'y':
+    if save == "y":
         env_file = Path(".env")
         with open(env_file, "a") as f:
             f.write(f"\nOPENAI_API_KEY={api_key}\n")
         print(f"API key saved to {env_file}")
-    
+
     return api_key

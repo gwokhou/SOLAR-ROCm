@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 
 try:
-    import torchview
+    from solar._vendor import torchview
     TORCHVIEW_AVAILABLE = True
 except ImportError:
     TORCHVIEW_AVAILABLE = False

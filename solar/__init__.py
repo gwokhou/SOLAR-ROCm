@@ -25,30 +25,34 @@ Package structure:
 - solar.graph: PyTorch graph processing
 """
 
-__version__ = "1.2.0"
+__version__ = "2.0.0"
 
-# Einsum conversion and analysis
-from solar.einsum import (
-    EinsumAnalyzer,
-    PyTorchToEinsum,
-    PyTorchEinsumConverter,  # Backward compatibility
-    BenchmarkEinsumConverter,
-)
+# Keep the historical top-level API without importing torchview when users only
+# need ROCm diagnostics, YAML validation, or performance modeling.
+_LAZY_IMPORTS = {
+    "EinsumAnalyzer": ("solar.einsum", "EinsumAnalyzer"),
+    "PyTorchToEinsum": ("solar.einsum", "PyTorchToEinsum"),
+    "PyTorchEinsumConverter": ("solar.einsum", "PyTorchEinsumConverter"),
+    "BenchmarkEinsumConverter": ("solar.einsum", "BenchmarkEinsumConverter"),
+    "EinsumGraphAnalyzer": ("solar.analysis", "EinsumGraphAnalyzer"),
+    "ModelAnalyzer": ("solar.analysis", "ModelAnalyzer"),
+    "EinsumGraphPerfModel": ("solar.perf", "EinsumGraphPerfModel"),
+    "PyTorchProcessor": ("solar.graph", "PyTorchProcessor"),
+    "TorchviewProcessor": ("solar.graph", "TorchviewProcessor"),
+    "EinsumOp": ("solar.einsum.ops", "EinsumOp"),
+    "EinsumOperand": ("solar.einsum.ops", "EinsumOperand"),
+}
 
-# Hardware-independent analysis
-from solar.analysis import (
-    EinsumGraphAnalyzer,
-    ModelAnalyzer,
-)
 
-# Performance modeling
-from solar.perf import EinsumGraphPerfModel
+def __getattr__(name: str):
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(name)
+    from importlib import import_module
 
-# Graph processing
-from solar.graph import PyTorchProcessor, TorchviewProcessor
-
-# Core types
-from solar.einsum.ops import EinsumOp, EinsumOperand
+    module_name, attribute = _LAZY_IMPORTS[name]
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
 
 __all__ = [
     # Einsum

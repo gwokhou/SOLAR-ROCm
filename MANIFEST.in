@@ -1,0 +1,10 @@
+include LICENSE README.md pyproject.toml setup.py
+include third_party/torchview/LICENSE
+recursive-include solar *.py *.yaml
+recursive-include third_party/torchview/src/torchview *.py py.typed
+
+prune build
+prune node_handlers_cache
+prune solar_handlers_cache
+prune tests
+global-exclude __pycache__ *.py[cod]

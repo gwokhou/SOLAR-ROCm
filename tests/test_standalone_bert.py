@@ -158,8 +158,7 @@ def get_inputs():
 
     # 3) analysis.yaml + arch -> perf prediction.
     perf_model = EinsumGraphPerfModel(debug=False)
-    perf = perf_model.predict(out_dir / "analysis.yaml", out_dir, arch_config="H100_PCIe", precision="fp32")
+    perf = perf_model.predict(out_dir / "analysis.yaml", out_dir, arch_config="RX_9060_XT", precision="fp32")
     assert perf is not None
-    assert (out_dir / "perf_H100_PCIe.yaml").exists()
-
+    assert (out_dir / "perf_Radeon_RX_9060_XT.yaml").exists()
 

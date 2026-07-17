@@ -16,28 +16,22 @@
 
 set -euo pipefail
 
-# Install Solar and its patched torchview dependency.
+if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+    echo "ERROR: SOLAR ROCm supports Linux x86_64 only." >&2
+    exit 2
+fi
+
+# Install SOLAR and its dependencies.
 #
 # This script:
-#   1. Clones torchview and checks out the tested commit
-#   2. Applies the Solar patch (parameter tensor support)
-#   3. Installs torchview from source
-#   4. Installs Solar dependencies
+#   1. Installs SOLAR dependencies
+#   2. Installs SOLAR in editable mode (including its vendored torchview code)
 #
 # Usage:
 #   bash install.sh              # Install everything
 #   bash install.sh --skip-torch # Skip torch installation (if already installed)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-TORCHVIEW_REPO="https://github.com/mert-kurttutan/torchview.git"
-TORCHVIEW_COMMIT="edbe1fa"
-TORCHVIEW_DIR="${REPO_ROOT}/torchview"
-PATCH_FILES=(
-    "${SCRIPT_DIR}/patches/torchview-parameter-tensors.patch"
-    "${SCRIPT_DIR}/patches/torchview-collect-attributes.patch"
-)
 
 SKIP_TORCH=false
 
@@ -65,69 +59,32 @@ done
 echo "=== Solar Installation ==="
 echo ""
 
-# Step 1: Clone and patch torchview
-echo "==> Step 1: Setting up patched torchview..."
-if [[ -d "${TORCHVIEW_DIR}" ]]; then
-    echo "  torchview directory exists: ${TORCHVIEW_DIR}"
-    cd "${TORCHVIEW_DIR}"
-
-    # Check if already at the right commit
-    current_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-    if [[ "$current_commit" != "${TORCHVIEW_COMMIT}"* ]]; then
-        echo "  Checking out commit ${TORCHVIEW_COMMIT}..."
-        git fetch origin
-        git checkout "${TORCHVIEW_COMMIT}"
-    fi
-else
-    echo "  Cloning torchview..."
-    git clone "${TORCHVIEW_REPO}" "${TORCHVIEW_DIR}"
-    cd "${TORCHVIEW_DIR}"
-    git checkout "${TORCHVIEW_COMMIT}"
-fi
-
-# Apply patches
-for PATCH_FILE in "${PATCH_FILES[@]}"; do
-    patch_name=$(basename "${PATCH_FILE}")
-    if [[ -f "${PATCH_FILE}" ]]; then
-        echo "  Applying patch: ${patch_name}..."
-        if git apply --check "${PATCH_FILE}" 2>/dev/null; then
-            git apply "${PATCH_FILE}"
-            echo "  ${patch_name} applied successfully."
-        else
-            echo "  ${patch_name} already applied or conflicts detected, skipping."
-        fi
-    else
-        echo "  Warning: Patch file not found: ${PATCH_FILE}"
-    fi
-done
-
-# Step 2: Install torchview from source
-echo ""
-echo "==> Step 2: Installing torchview from source..."
-cd "${TORCHVIEW_DIR}"
-pip install -e . --no-deps
-echo "  torchview installed."
-
-# Step 3: Install Solar dependencies
-echo ""
-echo "==> Step 3: Installing Solar dependencies..."
+# Step 1: Install SOLAR dependencies
+echo "==> Step 1: Installing SOLAR dependencies..."
 cd "${SCRIPT_DIR}"
 
 if [[ "$SKIP_TORCH" == "true" ]]; then
     echo "  Skipping torch (--skip-torch specified)."
     # Install everything except torch
-    pip install networkx>=3.0 pyyaml>=6.0 numpy>=1.24.0 matplotlib>=3.5.0 \
-                scipy>=1.10.0 pandas>=1.5.0 einops>=0.6.0
+    pip install "networkx>=3.0" "pyyaml>=6.0" "numpy>=1.24.0" "matplotlib>=3.5.0" \
+                "scipy>=1.10.0" "pandas>=1.5.0" "einops>=0.6.0"
 else
-    pip install -r requirements.txt
+    pip install \
+        --extra-index-url https://download.pytorch.org/whl/rocm7.2 \
+        --extra-index-url https://download.pytorch.org/whl/ \
+        -r requirements.txt
 fi
+
+# Step 2: Install SOLAR and its vendored torchview package.
+echo ""
+echo "==> Step 2: Installing SOLAR in editable mode..."
+pip install -e . --no-deps
 
 echo ""
 echo "=== Installation complete ==="
 echo ""
-echo "Torchview: ${TORCHVIEW_DIR} (commit ${TORCHVIEW_COMMIT} + ${#PATCH_FILES[@]} patches)"
-echo "Solar:     ${SCRIPT_DIR}"
+echo "SOLAR: ${SCRIPT_DIR}"
 echo ""
 echo "To verify:"
-echo "  python -c 'import torchview; print(torchview.__file__)'"
+echo "  python -c 'from solar._vendor import torchview; print(torchview.__file__)'"
 echo "  python -c 'from solar.graph import PyTorchProcessor; print(\"OK\")'"

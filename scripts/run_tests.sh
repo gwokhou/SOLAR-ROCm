@@ -25,6 +25,12 @@
 
 set -e
 
+if [ -x ".venv/bin/python" ] && .venv/bin/python -c "import torch; from solar._vendor import torchview" 2>/dev/null; then
+    PYTHON=(".venv/bin/python")
+else
+    PYTHON=("python3")
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -55,9 +61,9 @@ run_tests() {
     echo -e "\n${YELLOW}Running $test_name...${NC}"
     
     if [ "$VERBOSE" = "-v" ] || [ "$VERBOSE" = "--verbose" ]; then
-        python3 -m pytest tests/$test_module -v --tb=short
+        "${PYTHON[@]}" -m pytest tests/$test_module -v --tb=short
     else
-        python3 -m pytest tests/$test_module -q
+        "${PYTHON[@]}" -m pytest tests/$test_module -q
     fi
     
     if [ $? -eq 0 ]; then
@@ -71,7 +77,7 @@ run_tests() {
 # Function to run example scripts
 run_example() {
     local example_name=$1
-    local example_dir="${SCRIPT_DIR}/examples/${example_name}"
+    local example_dir="${SOLAR_ROOT}/examples/${example_name}"
     local output_dir="/tmp/solar_test_${example_name}"
     
     echo -e "\n${YELLOW}Running ${example_name} example...${NC}"
@@ -81,39 +87,17 @@ run_example() {
         return 1
     fi
     
-    # Map example names to their env var names used in run_solar.sh
-    case $example_name in
-        DenseAttention)
-            export SOLAR_DENSE_ATTN_OUTPUT_DIR="${output_dir}"
-            ;;
-        SlidingWindowAttention)
-            export SOLAR_SLIDING_WINDOW_OUTPUT_DIR="${output_dir}"
-            ;;
-        RandomAttention)
-            export SOLAR_RANDOM_ATTN_OUTPUT_DIR="${output_dir}"
-            ;;
-        BlockSparseAttention)
-            export SOLAR_BLOCK_SPARSE_OUTPUT_DIR="${output_dir}"
-            ;;
-        Attention)
-            export SOLAR_ATTENTION_OUTPUT_DIR="${output_dir}"
-            ;;
-        BERT)
-            export SOLAR_BERT_OUTPUT_DIR="${output_dir}"
-            ;;
-        *)
-            export "SOLAR_${example_name^^}_OUTPUT_DIR"="${output_dir}"
-            ;;
-    esac
+    export "SOLAR_${example_name^^}_OUTPUT_DIR"="${output_dir}"
     
     # Run the example
-    if bash "${example_dir}/run_solar.sh" > /dev/null 2>&1; then
+    if SOLAR_PYTHON="${PYTHON[0]}" bash "${example_dir}/run_solar.sh" > /dev/null 2>&1; then
         echo -e "${GREEN}✅ ${example_name} example passed${NC}"
         
         # Verify key output files exist
-        if [ -f "${output_dir}/einsum/einsum_graph_renamed.yaml" ] && \
-           [ -f "${output_dir}/einsum/einsum_graph.pdf" ] && \
-           [ -f "${output_dir}/analysis/analysis.yaml" ]; then
+        if [ -f "${output_dir}/graph/pytorch_graph.yaml" ] && \
+           [ -f "${output_dir}/einsum/einsum_graph_renamed.yaml" ] && \
+           [ -f "${output_dir}/analysis/analysis.yaml" ] && \
+           [ -f "${output_dir}/perf/perf_Radeon_RX_9060_XT.yaml" ]; then
             echo -e "   📁 All expected outputs generated"
         else
             echo -e "${YELLOW}   ⚠️  Some outputs missing${NC}"
@@ -129,19 +113,18 @@ run_example() {
     fi
 }
 
-# Install package in development mode if not already installed
-if ! python3 -c "import solar" 2>/dev/null; then
-    echo -e "${YELLOW}Installing Solar package in development mode...${NC}"
-    pip3 install -e . --no-deps
-    pip3 install -r requirements.txt
+# Refuse implicit environment mutation; install_uv.sh creates the pinned ROCm env.
+if ! "${PYTHON[@]}" -c "import solar" 2>/dev/null; then
+    echo -e "${RED}SOLAR is not installed. Run: bash install_uv.sh${NC}"
+    exit 2
 fi
 
 # Run tests based on type
 case $TEST_TYPE in
     quick)
         echo -e "${BLUE}Running quick smoke tests...${NC}"
-        python3 -m pytest tests/test_graph_processing.py::TestTorchviewProcessor::test_process_graph -v
-        python3 -m pytest tests/test_einsum_analyzer.py::TestEinsumAnalyzer::test_matmul -v
+        "${PYTHON[@]}" -m pytest tests/test_graph_processing.py::TestTorchviewProcessor::test_process_graph -v
+        "${PYTHON[@]}" -m pytest tests/test_einsum_analyzer.py::TestEinsumAnalyzer::test_matmul -v
         echo -e "${GREEN}✅ Quick smoke tests passed${NC}"
         ;;
     graph)
@@ -164,7 +147,7 @@ case $TEST_TYPE in
         ;;
     kernelbench)
         echo -e "\n${YELLOW}Testing Kernelbench compatibility...${NC}"
-        python3 -m pytest tests/ -k "kernelbench or Kernelbench" -v
+        "${PYTHON[@]}" -m pytest tests/ -k "kernelbench or Kernelbench" -v
         ;;
     examples)
         echo -e "${BLUE}Running example scripts...${NC}"
@@ -172,7 +155,7 @@ case $TEST_TYPE in
         EXAMPLES_PASSED=0
         EXAMPLES_FAILED=0
         
-        for example in DenseAttention SlidingWindowAttention RandomAttention BlockSparseAttention Attention BERT; do
+        for example in Attention BERT Conv2d Matmul; do
             if run_example "$example"; then
                 EXAMPLES_PASSED=$((EXAMPLES_PASSED + 1))
             else
@@ -197,13 +180,12 @@ case $TEST_TYPE in
         ;;
     all)
         echo -e "${BLUE}Running complete test suite...${NC}"
-        
-        run_tests "test_graph_processing.py" "Graph Processing Tests"
-        run_tests "test_einsum_analyzer.py" "Einsum Analyzer Tests"
-        run_tests "test_model_analyzer.py" "Model Analyzer Tests"
-        run_tests "test_llm_agent.py" "LLM Agent Tests"
-        run_tests "test_standalone_bert.py" "Standalone BERT Tests"
-        run_tests "test_integration.py" "Integration Tests"
+
+        if [ "$VERBOSE" = "-v" ] || [ "$VERBOSE" = "--verbose" ]; then
+            "${PYTHON[@]}" -m pytest tests/ -v --tb=short
+        else
+            "${PYTHON[@]}" -m pytest tests/ -q
+        fi
         
         echo -e "\n${GREEN}All tests passed!${NC}"
         ;;

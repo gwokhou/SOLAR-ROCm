@@ -39,6 +39,7 @@ from solar.einsum.node_type_registry import (
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.types import AnalysisResult, NodeInfo, TensorShapes
 from solar.common.utils import convert_numpy_types, ensure_directory, format_number
+from solar.rocm import ArchitectureProfile
 
 
 class ModelAnalyzer:
@@ -174,7 +175,7 @@ class ModelAnalyzer:
     def analyze_model(self,
                      model_path: str,
                      graph_type: str = "torchview_graph",
-                     arch_config: str = "H100_PCIe",
+                     arch_config: str = "RX_9060_XT",
                      precision: str = DEFAULT_PRECISION) -> AnalysisResult:
         """Analyze a model from a graph file.
         
@@ -254,32 +255,8 @@ class ModelAnalyzer:
         )
 
     def _load_arch_config(self, arch_config: str) -> Dict[str, Any]:
-        """Load an architecture YAML by name or path.
-        
-        Supports either:
-        - A full path to a YAML file
-        - A config name looked up under `solar/configs/arch/<name>.yaml`
-        """
-        # Explicit path.
-        cfg_path = Path(arch_config)
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                return yaml.safe_load(f) or {}
-
-        # Look under solar root: solar/configs/arch/<name>.yaml
-        solar_root = Path(__file__).resolve().parents[2]
-        candidate = solar_root / "configs" / "arch" / f"{arch_config}.yaml"
-        if candidate.exists():
-            with open(candidate) as f:
-                return yaml.safe_load(f) or {}
-
-        # Backward-compatible fallback.
-        fallback = solar_root / "configs" / "arch" / "H100_PCIe.yaml"
-        if fallback.exists():
-            with open(fallback) as f:
-                return yaml.safe_load(f) or {}
-
-        return {}
+        """Load a strict normalized architecture profile by name or path."""
+        return ArchitectureProfile.load(arch_config).to_dict()
     
     def _convert_torchview_to_model_info(self,
                                         nodes_data: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -653,23 +630,42 @@ class ModelAnalyzer:
         Returns:
             Roofline performance metrics.
         """
-        # Get architecture parameters
-        freq_ghz = arch_config.get("freq_GHz", 1.0)
-        mac_key = f"MAC_per_cycle_{precision}_tc"
-        mac_per_cycle = arch_config.get(mac_key, arch_config.get("MAC_per_cycle_fp32_tc", 1000))
-        dram_bw = arch_config.get("DRAM_byte_per_cycle", 1000)
+        # Use normalized ROCm throughput and bandwidth instead of legacy
+        # vendor-specific per-cycle fields.
+        normalized_precision = {
+            "float32": "fp32",
+            "float16": "fp16",
+            "half": "fp16",
+            "bfloat16": "bf16",
+        }.get(precision.lower(), precision.lower())
+        peak_ops = arch_config.get("peak_ops_per_second", {})
+        if normalized_precision == "nvfp4":
+            raise ValueError("NVFP4 is unsupported on the gfx1200 ROCm target")
+        if normalized_precision not in peak_ops:
+            raise ValueError(
+                f"Precision {precision!r} is unsupported by this architecture"
+            )
+        ops_per_second = float(peak_ops[normalized_precision])
+        memory_bandwidth = float(
+            arch_config.get("memory_bandwidth_bytes_per_second", 0)
+        )
+        clock_hz = float(arch_config.get("clock_hz") or 1e9)
+        if ops_per_second <= 0 or memory_bandwidth <= 0:
+            raise ValueError("architecture profile has invalid throughput or bandwidth")
         
         # Calculate memory bytes
-        bytes_per_element = BYTES_PER_ELEMENT.get(precision, 4)
+        if normalized_precision not in BYTES_PER_ELEMENT:
+            raise ValueError(f"Unknown storage width for precision {precision!r}")
+        bytes_per_element = BYTES_PER_ELEMENT[normalized_precision]
         memory_bytes = memory_elements * bytes_per_element
         
         # Calculate time
-        compute_cycles = compute_macs / mac_per_cycle
-        memory_cycles = memory_bytes / dram_bw
+        compute_cycles = (2.0 * compute_macs / ops_per_second) * clock_hz
+        memory_cycles = (memory_bytes / memory_bandwidth) * clock_hz
         total_cycles = max(compute_cycles, memory_cycles)
         
         # Runtime in ms
-        runtime_ms = total_cycles / (freq_ghz * 1e6)
+        runtime_ms = total_cycles / (clock_hz / 1e3)
         
         # Determine bottleneck
         bottleneck = "compute" if compute_cycles > memory_cycles else "memory"

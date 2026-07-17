@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
 import torch
-import torchview
 from torch import nn
 
+from solar._vendor import torchview
 from solar.common.types import ProcessingConfig
 from solar.common.utils import (
     ensure_directory,
@@ -58,21 +58,21 @@ def _patch_torchview_collect_attributes():
     See patches/torchview-collect-attributes.patch for the equivalent
     source-level fix.
     """
-    import torchview.torchview as tv_mod
-    import torchview.recorder_tensor as rt_mod
+    from solar._vendor.torchview import recorder_tensor as rt_mod
+    from solar._vendor.torchview import torchview as tv_mod
 
     orig_process_input = tv_mod.process_input
     orig_torch_function = rt_mod.RecorderTensor.__torch_function__
 
     def _patched_process_input(input_data, input_size, kwargs, device,
                                dtypes=None, collect_attributes=False):
-        from torchview.torchview import (
+        from solar._vendor.torchview.torchview import (
             set_device, traverse_data, get_recorder_tensor,
             get_correct_input_sizes, get_input_tensor,
             RecorderTensor, reduce_data_info, collect_tensor_node,
         )
-        from torchview.recorder_tensor import NodeContainer
-        from torchview.computation_node import TensorNode
+        from solar._vendor.torchview.recorder_tensor import NodeContainer
+        from solar._vendor.torchview.computation_node import TensorNode
 
         x = None
         correct_input_size = []
@@ -115,10 +115,10 @@ def _patch_torchview_collect_attributes():
         if kwargs is None:
             kwargs = {}
 
-        from torchview.recorder_tensor import (
+        from solar._vendor.torchview.recorder_tensor import (
             RecorderTensor, reduce_data_info, collect_tensor_node,
         )
-        from torchview.computation_node import TensorNode, NodeContainer
+        from solar._vendor.torchview.computation_node import NodeContainer, TensorNode
 
         recorder_nodes: NodeContainer[TensorNode] = (
             reduce_data_info([args, kwargs], collect_tensor_node,
@@ -175,9 +175,9 @@ def _check_torchview_parameter_support() -> None:
         raise RuntimeError(
             "torchview probe failed — cannot verify parameter-tensor support.\n"
             "SOLAR depends on a patched torchview to extract weight/bias tensor\n"
-            "nodes (parameter-tensor). Please follow solar/install.sh or\n"
-            "solar/install_uv.sh to install and patch torchview.\n"
-            "The patch can be found at: solar/patches/torchview-parameter-tensors.patch"
+            "nodes (parameter-tensor). Run bash install_uv.sh to install SOLAR\n"
+            "with its vendored torchview implementation. The source patch is\n"
+            "documented in patches/torchview-parameter-tensors.patch."
         ) from exc
 
     for edge in graph.edge_list:
@@ -188,9 +188,9 @@ def _check_torchview_parameter_support() -> None:
     raise RuntimeError(
         "Installed torchview does not generate parameter-tensor nodes.\n"
         "SOLAR depends on a patched torchview to extract weight/bias tensor\n"
-        "nodes (parameter-tensor). Please follow solar/install.sh or\n"
-        "solar/install_uv.sh to install and patch torchview.\n"
-        "The patch can be found at: solar/patches/torchview-parameter-tensors.patch"
+        "nodes (parameter-tensor). Run bash install_uv.sh to install SOLAR\n"
+        "with its vendored torchview implementation. The source patch is\n"
+        "documented in patches/torchview-parameter-tensors.patch."
     )
 
 

@@ -11,6 +11,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOLAR_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PYTHON_BIN="${SOLAR_PYTHON:-${SOLAR_ROOT}/.venv/bin/python}"
+if [ ! -x "${PYTHON_BIN}" ]; then
+  PYTHON_BIN="python3"
+fi
 
 MODEL_FILE="${SCRIPT_DIR}/BERT.py"
 OUT_BASE="${SOLAR_BERT_OUTPUT_DIR:-${SCRIPT_DIR}/output}"
@@ -30,33 +34,33 @@ fi
 cd "${SOLAR_ROOT}"
 
 echo "==> Processing model -> ${GRAPH_OUT}"
-python3 -m solar.cli.process_model \
+"${PYTHON_BIN}" -m solar.cli.process_model \
   --model-file "${MODEL_FILE}" \
   --output-dir "${GRAPH_OUT}" \
   --save-graph \
   --force-rerun
 
 echo "==> Converting pytorch graph -> ${EINSUM_OUT}"
-python3 -m solar.cli.toeinsum_model \
+"${PYTHON_BIN}" -m solar.cli.toeinsum_model \
   --graph-path "${GRAPH_OUT}/pytorch_graph.yaml" \
   --output-dir "${EINSUM_OUT}" \
   --no-copy-graph \
   --save-graph
 
 echo "==> Analyzing einsum graph -> ${ANALYSIS_OUT}"
-python3 -m solar.cli.analyze_model \
+"${PYTHON_BIN}" -m solar.cli.analyze_model \
   --einsum-graph-path "${EINSUM_OUT}/einsum_graph_renamed.yaml" \
   --output-dir "${ANALYSIS_OUT}"
 
 echo "==> Predicting perf -> ${PERF_OUT}"
-python3 -m solar.cli.predict_perf_model \
+"${PYTHON_BIN}" -m solar.cli.predict_perf_model \
   --analysis-path "${ANALYSIS_OUT}/analysis.yaml" \
   --output-dir "${PERF_OUT}" \
-  --arch-config "H100_PCIe" \
+  --arch-config "RX_9060_XT" \
   --precision "fp32"
 
 echo "==> Converting to Timeloop format -> ${TIMELOOP_OUT}"
-python3 -m solar.cli.totimeloop \
+"${PYTHON_BIN}" -m solar.cli.totimeloop \
   --einsum-graph-path "${EINSUM_OUT}/einsum_graph_renamed.yaml" \
   --output-dir "${TIMELOOP_OUT}"
 
@@ -69,5 +73,5 @@ echo "Einsum graph:    ${EINSUM_OUT}/einsum_graph.yaml"
 echo "Einsum renamed:  ${EINSUM_OUT}/einsum_graph_renamed.yaml"
 echo "Graph PDF:       ${EINSUM_OUT}/einsum_graph.pdf"
 echo "Analysis:        ${ANALYSIS_OUT}/analysis.yaml"
-echo "Perf:            ${PERF_OUT}/perf_H100_PCIe.yaml"
+echo "Perf:            ${PERF_OUT}/perf_Radeon_RX_9060_XT.yaml"
 echo "Timeloop graph:  ${TIMELOOP_OUT}/timeloop_graph.yaml"

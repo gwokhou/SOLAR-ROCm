@@ -190,9 +190,9 @@ class TestModelAnalyzer:
     def test_calculate_roofline_performance(self, analyzer):
         """Test roofline performance calculation."""
         arch_config = {
-            "freq_GHz": 1.8,
-            "MAC_per_cycle_fp32_tc": 1000,
-            "DRAM_byte_per_cycle": 500
+            "clock_hz": 1.8e9,
+            "memory_bandwidth_bytes_per_second": 900e9,
+            "peak_ops_per_second": {"fp32": 3.6e12}
         }
         
         perf = analyzer._calculate_roofline_performance(
@@ -208,13 +208,28 @@ class TestModelAnalyzer:
         assert "bottleneck" in perf
         assert perf["bottleneck"] in ["compute", "memory"]
     
+    def test_calculate_roofline_rejects_unsupported_precision(self, analyzer):
+        arch_config = {
+            "clock_hz": 1.8e9,
+            "memory_bandwidth_bytes_per_second": 900e9,
+            "peak_ops_per_second": {"fp32": 3.6e12}
+        }
+
+        with pytest.raises(ValueError, match="unsupported"):
+            analyzer._calculate_roofline_performance(
+                compute_macs=1,
+                memory_elements=1,
+                arch_config=arch_config,
+                precision="fp8"
+            )
+
     def test_save_analysis_json(self, analyzer, tmp_path):
         """Test saving analysis to JSON."""
         analysis = AnalysisResult(
             layers={"conv1": {"compute_macs": 100}},
             total={"compute_macs": 100, "num_layers": 1},
             roofline_performance={"runtime_ms": 0.1},
-            metadata={"arch_config": "H100_PCIe"}
+            metadata={"arch_config": "RX_9060_XT"}
         )
         
         output_path = tmp_path / "analysis.json"
@@ -226,7 +241,7 @@ class TestModelAnalyzer:
             data = json.load(f)
         
         assert data["total"]["compute_macs"] == 100
-        assert data["metadata"]["arch_config"] == "H100_PCIe"
+        assert data["metadata"]["arch_config"] == "RX_9060_XT"
     
     def test_save_analysis_yaml(self, analyzer, tmp_path):
         """Test saving analysis to YAML."""
@@ -234,7 +249,7 @@ class TestModelAnalyzer:
             layers={"conv1": {"compute_macs": 100}},
             total={"compute_macs": 100, "num_layers": 1},
             roofline_performance={"runtime_ms": 0.1},
-            metadata={"arch_config": "A6000"}
+            metadata={"arch_config": "legacy_custom"}
         )
         
         output_path = tmp_path / "analysis.yaml"
@@ -246,7 +261,7 @@ class TestModelAnalyzer:
             data = yaml.safe_load(f)
         
         assert data["total"]["compute_macs"] == 100
-        assert data["metadata"]["arch_config"] == "A6000"
+        assert data["metadata"]["arch_config"] == "legacy_custom"
     
     def test_analyze_model_torchview(self, analyzer, tmp_path):
         """Test analyzing a model from torchview graph."""
@@ -274,7 +289,7 @@ class TestModelAnalyzer:
         result = analyzer.analyze_model(
             str(graph_file),
             graph_type="torchview_graph",
-            arch_config="H100_PCIe",
+            arch_config="RX_9060_XT",
             precision="fp32"
         )
         
@@ -342,3 +357,4 @@ class TestKernelbenchCompatibility:
         assert len(graph.nodes) == 3
         assert graph.has_edge("layer1", "layer2")
         assert graph.has_edge("layer2", "layer3")
+

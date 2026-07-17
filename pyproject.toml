@@ -2,16 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "solar"
-version = "1.1.0"
-description = "PyTorch model graph analysis and einsum optimization toolkit with LLM support"
+version = "2.0.0"
+description = "ROCm-native SOL analysis and executable kernel benchmarking for AMD GPUs"
 readme = "README.md"
-license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "third_party/torchview/LICENSE"]
+requires-python = ">=3.10,<3.14"
 authors = [
     { name = "Solar Team", email = "solar@example.com" }
 ]
@@ -19,7 +20,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -27,8 +27,8 @@ classifiers = [
 ]
 # Must match requirements.txt
 dependencies = [
-    "torch>=2.9.0",
-    "torchview>=0.2.6",
+    "torch==2.11.0+rocm7.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "triton-rocm==3.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "networkx>=3.0",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
@@ -44,6 +44,9 @@ dependencies = [
     "pytest-cov>=4.0.0",
 ]
 
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
 [project.optional-dependencies]
 dev = [
     "black>=23.0.0",
@@ -58,7 +61,57 @@ solar-toeinsum = "solar.cli.toeinsum:main"
 solar-toeinsum-model = "solar.cli.toeinsum_model:main"
 solar-analyze-model = "solar.cli.analyze_model:main"
 solar-predict-perf-model = "solar.cli.predict_perf_model:main"
+solar-rocm-doctor = "solar.cli.rocm_doctor:main"
+solar-calibrate-rocm = "solar.cli.calibrate_rocm:main"
+solar-evaluate = "solar.cli.evaluate_rocm:main"
+solar-create-baseline = "solar.cli.create_baseline:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["solar*"]
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm72"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm-root"
+url = "https://download.pytorch.org/whl/"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-rocm72", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+triton-rocm = [
+    { index = "pytorch-rocm-root", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[tool.setuptools]
+include-package-data = false
+packages = [
+    "solar",
+    "solar._vendor",
+    "solar._vendor.torchview",
+    "solar._vendor.torchview.computation_node",
+    "solar.analysis",
+    "solar.benchmark",
+    "solar.cli",
+    "solar.common",
+    "solar.configs",
+    "solar.configs.arch",
+    "solar.einsum",
+    "solar.einsum.ops",
+    "solar.graph",
+    "solar.perf",
+    "solar.rocm",
+]
+
+[tool.setuptools.package-dir]
+"solar._vendor.torchview" = "third_party/torchview/src/torchview"
+
+[tool.setuptools.package-data]
+"solar._vendor.torchview" = ["py.typed"]
+"solar.configs.arch" = ["*.yaml"]

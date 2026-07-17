@@ -45,8 +45,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--arch-config",
-        default="H100_PCIe",
-        help="Architecture name (e.g., H100_PCIe) or path to a YAML file.",
+        default="RX_9060_XT",
+        help="Architecture name (default: RX_9060_XT) or path to a YAML file.",
     )
     parser.add_argument(
         "--precision",
@@ -95,5 +95,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

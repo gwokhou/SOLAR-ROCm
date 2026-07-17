@@ -40,7 +40,7 @@ import yaml
 
 # Skip tests if torchview is not available
 try:
-    from torchview import draw_graph
+    from solar._vendor.torchview import draw_graph
     TORCHVIEW_AVAILABLE = True
 except ImportError:
     TORCHVIEW_AVAILABLE = False
@@ -565,4 +565,3 @@ class TestReductionAttributes:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

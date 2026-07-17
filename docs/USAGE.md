@@ -8,9 +8,8 @@ This page contains the more detailed “how to use SOLAR” material that’s in
 ## Installation
 
 ```bash
-# From repo root
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
+# From repo root; installs the pinned ROCm environment and editable package
+bash install_uv.sh
 ```
 
 For PDF graph rendering, install Graphviz (the `dot` binary) on your system.
@@ -78,7 +77,7 @@ solar-analyze-model --einsum-graph-path output/einsum/einsum_graph_renamed.yaml 
 
 # Stage 4: Predict performance
 solar-predict-perf-model --analysis-path output/analysis/analysis.yaml \
-                         --output-dir output/perf --arch-config H100_PCIe
+                         --output-dir output/perf --arch-config RX_9060_XT
 
 # Stage 5: Convert to Timeloop format
 solar-totimeloop --einsum-graph-path output/einsum/einsum_graph_renamed.yaml \
@@ -92,7 +91,7 @@ solar-totimeloop --einsum-graph-path output/einsum/einsum_graph_renamed.yaml \
 solar-toeinsum --level level1 --kernel-ids 1 2 3
 
 # Use different architecture
-solar-toeinsum --level level1 --kernel-ids 1 --arch-config B200
+solar-toeinsum --level level1 --kernel-ids 1 --arch-config RX_9060_XT
 ```
 
 ## Output file formats
@@ -164,7 +163,7 @@ perf_model = EinsumGraphPerfModel()
 perf_model.predict(
     "outputs/my_model/analysis.yaml",
     "outputs/my_model",
-    arch_config="H100_PCIe",
+    arch_config="RX_9060_XT",
 )
 ```
 
@@ -191,4 +190,3 @@ converter.convert(
 ├── scripts/           # Utilities + benchmark runners
 └── docs/              # Guides and verification docs
 ```
-

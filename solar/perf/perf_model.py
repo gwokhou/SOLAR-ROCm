@@ -36,6 +36,7 @@ import yaml
 
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.utils import ensure_directory, NoAliasDumper
+from solar.rocm import ArchitectureProfile
 
 
 PathLike = Union[str, Path]
@@ -58,7 +59,7 @@ class EinsumGraphPerfModel:
         analysis_path: PathLike,
         output_dir: PathLike,
         *,
-        arch_config: str = "H100_PCIe",
+        arch_config: str = "RX_9060_XT",
         precision: str = DEFAULT_PRECISION,
         copy_analysis: bool = True,
     ) -> Optional[Dict[str, Any]]:
@@ -67,7 +68,7 @@ class EinsumGraphPerfModel:
         Args:
             analysis_path: Path to `analysis.yaml`.
             output_dir: Directory to write perf outputs into.
-            arch_config: Architecture name (e.g., "H100_PCIe") or path to a YAML file.
+            arch_config: Architecture name (default: ``RX_9060_XT``) or YAML path.
             precision: Precision used for selecting MAC throughput keys.
             copy_analysis: If True, copy analysis into output dir as `analysis.yaml`.
 
@@ -107,6 +108,20 @@ class EinsumGraphPerfModel:
 
         arch_name = str(arch.get("name") or Path(str(arch_config)).stem or "arch")
 
+        normalized_precision = {
+            "float32": "fp32",
+            "float16": "fp16",
+            "half": "fp16",
+            "bfloat16": "bf16",
+        }.get(precision.lower(), precision.lower())
+        if arch.get("gfx_target") and "peak_ops_per_second" in arch:
+            if normalized_precision == "nvfp4":
+                raise ValueError("NVFP4 is unsupported on the gfx1200 ROCm target")
+            if normalized_precision not in arch["peak_ops_per_second"]:
+                raise ValueError(
+                    f"Precision {precision!r} is unsupported by {arch_name}"
+                )
+
         # Check for quantization metadata (e.g., nvfp4/fp8 conversions)
         quant_metadata = self._load_quant_metadata(analysis_path)
         quant_mac_key = None
@@ -125,10 +140,10 @@ class EinsumGraphPerfModel:
         # may run perf with a different precision than the analysis was generated with.
         if quant_bpe is not None:
             bytes_per_element = quant_bpe
-        elif precision in BYTES_PER_ELEMENT:
-            bytes_per_element = BYTES_PER_ELEMENT[precision]
+        elif normalized_precision in BYTES_PER_ELEMENT:
+            bytes_per_element = BYTES_PER_ELEMENT[normalized_precision]
         else:
-            bytes_per_element = float(metadata.get("bytes_per_element", 4))
+            raise ValueError(f"Unknown storage width for precision {precision!r}")
         
         total_macs = float(total.get("macs", 0))
         total_flops = float(total.get("flops", 0))
@@ -180,38 +195,29 @@ class EinsumGraphPerfModel:
         if quant_mac_key:
             mac_key = quant_mac_key
         else:
-            mac_key = f"MAC_per_cycle_{precision}_tc"
+            mac_key = f"ops_per_cycle_{normalized_precision}_matrix"
         mac_per_cycle = arch.get(mac_key)
-
         if mac_per_cycle is None:
-            # Fallback chain based on precision similarity
-            if precision in ["bf16", "bfloat16"]:
-                # BF16 has same throughput as FP16 on modern tensor cores
-                mac_per_cycle = arch.get("MAC_per_cycle_fp16_tc")
-            elif precision in ["fp16", "float16", "half"]:
-                # Try FP16, then BF16
-                mac_per_cycle = arch.get("MAC_per_cycle_bf16_tc")
-
-            # Final fallback to FP32
-            if mac_per_cycle is None:
-                mac_per_cycle = arch.get("MAC_per_cycle_fp32_tc", arch.get("MAC_per_cycle_fp32_sm", 1.0))
+            raise ValueError(
+                f"Architecture profile does not define throughput for {precision!r}"
+            )
 
         mac_per_cycle = float(mac_per_cycle)
 
         total_other_ops = float(total.get("other_ops", 0))
-        sm_per_cycle = float(arch.get("MAC_per_cycle_fp32_sm", 0))
+        scalar_ops_per_cycle = float(arch.get("ops_per_cycle_fp32_scalar", 0))
 
-        # Tensor-core cycles (matmul/conv MACs)
-        compute_tc_cycles = total_macs / mac_per_cycle if mac_per_cycle > 0 else 0.0
-        # SM cycles (elementwise / reduction ops that run on CUDA cores).
+        # Matrix-operation cycles (matmul/conv MACs).
+        compute_matrix_cycles = total_macs / mac_per_cycle if mac_per_cycle > 0 else 0.0
+        # Vector cycles (elementwise / reduction ops on scalar/vector ALUs).
         # NOTE: Disabled for SOL computation.  Elementwise/reshape ops are
         # memory-bound in practice — their cost is already captured by
-        # fused_memory_cycles.  Including SM cycles here would double-count
+        # fused_memory_cycles.  Including scalar cycles here would double-count
         # and inflate SOL by 10-34,000x for elementwise-heavy kernels.
-        # SM cycle stats are still reported for informational purposes.
-        compute_sm_cycles = total_other_ops / sm_per_cycle if sm_per_cycle > 0 else 0.0
-        # SOL compute = tensor-core cycles only
-        compute_cycles = compute_tc_cycles
+        # Scalar/vector cycle stats are still reported for informational purposes.
+        compute_scalar_cycles = total_other_ops / scalar_ops_per_cycle if scalar_ops_per_cycle > 0 else 0.0
+        # SOL compute = matrix/contracted-operation cycles only.
+        compute_cycles = compute_matrix_cycles
         
         # Memory cycles for each model (using bytes)
         unfused_mem_cycles = total_orojenesis_bytes / dram_bw if dram_bw > 0 else 0.0
@@ -232,13 +238,19 @@ class EinsumGraphPerfModel:
         ridge_point = mac_per_cycle / dram_bw if dram_bw > 0 else 0.0
 
         perf: Dict[str, Any] = {
+            "model": {
+                "formula": "max(total_flops / peak_ops_per_second, fused_bytes / memory_bandwidth_bytes_per_second)",
+                "precision": precision,
+                "rocm_native": True,
+            },
             "arch": {
                 "name": arch_name,
-                "freq_GHz": freq_ghz,
-                "DRAM_byte_per_cycle": dram_bw,
-                "mac_per_cycle_key": mac_key,
-                "MAC_per_cycle": mac_per_cycle,
-                "MAC_per_cycle_fp32_sm": sm_per_cycle,
+                "clock_hz": freq_ghz * 1e9,
+                "memory_bandwidth_bytes_per_second": dram_bw * freq_ghz * 1e9,
+                "throughput_precision": mac_key.removeprefix("ops_per_cycle_").removesuffix("_matrix"),
+                "operations_per_cycle": mac_per_cycle,
+                "scalar_operations_per_cycle": scalar_ops_per_cycle,
+                "peak_ops_per_second": dict(arch["peak_ops_per_second"]),
                 "ridge_point": ridge_point,
             },
             "workload": {
@@ -252,8 +264,8 @@ class EinsumGraphPerfModel:
                 "description": "Each op in isolation, all tensors from DRAM",
                 "memory_elements": int(total_orojenesis_elems),
                 "memory_bytes": int(total_orojenesis_bytes),
-                "compute_tc_cycles": int(compute_tc_cycles),
-                "compute_sm_cycles": int(compute_sm_cycles),
+                "compute_matrix_cycles": int(compute_matrix_cycles),
+                "compute_scalar_cycles": int(compute_scalar_cycles),
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(unfused_mem_cycles),
                 "total_cycles": int(unfused_total_cycles),
@@ -265,8 +277,8 @@ class EinsumGraphPerfModel:
                 "description": "Per-op roofline, intermediate tensors excluded",
                 "memory_elements": int(total_fused_elems),
                 "memory_bytes": int(total_fused_bytes),
-                "compute_tc_cycles": int(compute_tc_cycles),
-                "compute_sm_cycles": int(compute_sm_cycles),
+                "compute_matrix_cycles": int(compute_matrix_cycles),
+                "compute_scalar_cycles": int(compute_scalar_cycles),
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(fused_mem_cycles),
                 "total_cycles": int(fused_total_cycles),
@@ -278,8 +290,8 @@ class EinsumGraphPerfModel:
                 "description": "Single roofline for entire graph, perfect overlap",
                 "memory_elements": int(total_fused_prefetched_elems),
                 "memory_bytes": int(total_fused_prefetched_bytes),
-                "compute_tc_cycles": int(compute_tc_cycles),
-                "compute_sm_cycles": int(compute_sm_cycles),
+                "compute_matrix_cycles": int(compute_matrix_cycles),
+                "compute_scalar_cycles": int(compute_scalar_cycles),
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(fused_prefetched_mem_cycles),
                 "total_cycles": int(fused_prefetched_total_cycles),
@@ -362,7 +374,7 @@ class EinsumGraphPerfModel:
 
         Scans ``dtype_conversions`` for the *highest-throughput* original
         quantized dtype (nvfp4 > fp8).  Returns the corresponding
-        ``(mac_per_cycle_key, bytes_per_element, orig_dtype_label)`` or
+        ``(operations_per_cycle_key, bytes_per_element, orig_dtype_label)`` or
         ``(None, None, None)`` if no quantized dtypes are found.
         """
         conversions = metadata.get("dtype_conversions") or []
@@ -387,7 +399,12 @@ class EinsumGraphPerfModel:
         if best_precision is None:
             return None, None, None
 
-        mac_key = f"MAC_per_cycle_{best_precision}_tc"
+        if best_precision == "nvfp4" and str(arch.get("gfx_target", "")).startswith(
+            "gfx"
+        ):
+            raise ValueError("NVFP4 metadata is unsupported on the gfx1200 ROCm target")
+
+        mac_key = f"ops_per_cycle_{best_precision}_matrix"
         if mac_key not in arch:
             if self.debug:
                 print(f"Debug: arch config missing {mac_key}, falling back to precision={precision}")
@@ -401,21 +418,31 @@ class EinsumGraphPerfModel:
 
     def _load_arch_config(self, arch_config: str) -> Dict[str, Any]:
         """Load an architecture YAML by name or path."""
-        # Explicit path.
-        cfg_path = Path(arch_config)
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                return yaml.safe_load(f) or {}
+        try:
+            profile = ArchitectureProfile.load(arch_config)
+        except FileNotFoundError:
+            return {}
+        return self._normalize_arch_config(profile)
 
-        # Look under solar root: solar/configs/arch/<name>.yaml
-        solar_root = Path(__file__).resolve().parents[2]
-        candidate = solar_root / "configs" / "arch" / f"{arch_config}.yaml"
-        if candidate.exists():
-            with open(candidate) as f:
-                return yaml.safe_load(f) or {}
-
-        # Fallback: return empty.
-        return {}
+    @staticmethod
+    def _normalize_arch_config(profile: ArchitectureProfile) -> Dict[str, Any]:
+        """Expose a normalized ROCm profile to the cycle-based calculation core."""
+        frequency = profile.clock_hz or 1e9
+        adapted = profile.to_dict()
+        adapted["freq_GHz"] = frequency / 1e9
+        adapted["DRAM_capacity"] = profile.memory_capacity_bytes
+        adapted["DRAM_byte_per_cycle"] = (
+            profile.memory_bandwidth_bytes_per_second / frequency
+        )
+        adapted["SRAM_capacity"] = profile.last_level_cache_bytes
+        for precision, ops in profile.peak_ops_per_second.items():
+            adapted[f"ops_per_cycle_{precision}_matrix"] = ops / (2.0 * frequency)
+        adapted["ops_per_cycle_fp32_scalar"] = profile.peak_ops_per_second.get(
+            "fp32", 0
+        ) / (2.0 * frequency)
+        adapted["profile_source"] = profile.source
+        return adapted
 
 
 __all__ = ["EinsumGraphPerfModel"]
+

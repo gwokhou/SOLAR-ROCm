@@ -9,6 +9,14 @@ The postprocessing script (`solar/solar/benchmark/solbenchv2/postprocess.py`)
 rewrites benchmark source code so Solar can extract computation graphs from
 quantized kernels without altering the mathematical structure.
 
+## ROCm Target Behavior
+
+The graph-extraction rewrites below remain useful for shape analysis. On the
+RX 9060 XT performance path, FP32, FP16/BF16, FP8, INT8, and explicit INT4
+workloads are accepted when the architecture profile publishes throughput.
+NVFP4 metadata stays readable for graph inspection but is rejected for ROCm
+runtime prediction rather than silently mapped to a different AMD format.
+
 ## Meta Device Dtype Support
 
 | Dtype | Tensor Creation | `.to()` / `copy_()` | matmul / addmm | Conclusion |
@@ -157,3 +165,4 @@ bash scripts/run_solbenchv3_quant_rewrite.sh --debug
 - Detailed case-by-case doc: `solar/solar/benchmark/solbenchv2/QUANT_CONVERSION.md`
 - Runner script: `solar/scripts/run_solbenchv3_quant_rewrite.sh`
 - Main solbench v3 runner: `solar/scripts/run_solbenchv3.sh`
+

@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 
 try:
-    import torchview
+    from solar._vendor import torchview
 except ImportError:
     torchview = None
 

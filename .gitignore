@@ -134,6 +134,7 @@ dmypy.json
 .DS_Store
 
 # Solar-specific
+.deps/
 node_handlers_cache/
 solar_handlers_cache/
 solar_outputs/
@@ -145,9 +146,7 @@ output_*/
 # Temporary test files
 test_output/
 
-# Lock files
-uv.lock
+# Commit uv.lock so ROCm/PyTorch/Triton resolution is reproducible.
 
 # Environment config
 env.sh
-

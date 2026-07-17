@@ -285,9 +285,9 @@ class EinsumGraphAnalyzer:
         _orphaned_layers: Set[str] = set()
 
         layers_out: Dict[str, Any] = {}
-        total_macs = 0          # tensor-core MACs (matmul, conv)
+        total_macs = 0          # contracted-operation MACs (matmul, conv)
         total_flops = 0         # 2 * total_macs
-        total_other_ops = 0     # CUDA-core elementwise/reduction ops
+        total_other_ops = 0     # scalar/vector elementwise and reduction ops
         total_unfused_elems = 0       # Σ (all input + output elems) per op
         total_intermediate_elems = 0  # Σ intermediate activation elems
 
@@ -339,7 +339,7 @@ class EinsumGraphAnalyzer:
             # Embedding: table lookup, zero MACs
             # Memory ops (cat, repeat, stack, chunk, split): move data but
             #   have zero *compute* cost — bounded by memory bandwidth, not
-            #   SM throughput.  Their memory cost is already captured by
+            #   scalar/vector throughput. Their memory cost is already captured by
             #   input_elems/output_elems; assigning them other_ops would
             _ZERO_COMPUTE_OPS = {
                 # Embedding

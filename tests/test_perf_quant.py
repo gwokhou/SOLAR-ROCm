@@ -5,7 +5,7 @@
 
 Verifies that:
 1. When metadata.yaml with nvfp4 orig_dtypes exists, the perf model uses
-   MAC_per_cycle_nvfp4_tc and 0.5 bytes_per_element.
+   the matching matrix-throughput entry and 0.5 bytes_per_element.
 2. Without metadata.yaml, the perf model uses the default precision.
 3. The two produce different results.
 4. The analysis metadata also reflects the quant override.
@@ -122,7 +122,7 @@ class TestPerfQuantNVFP4:
         return analysis
 
     def _run_perf(self, analysis_path, metadata=None):
-        """Run perf prediction on B200."""
+        """Run perf prediction on the gfx1200 profile."""
         perf_dir = self.tmp_path / "perf"
         perf_dir.mkdir(exist_ok=True)
 
@@ -134,7 +134,7 @@ class TestPerfQuantNVFP4:
         model = EinsumGraphPerfModel()
         perf = model.predict(
             str(analysis_path), str(perf_dir),
-            arch_config="B200", precision="fp16",
+            arch_config="RX_9060_XT", precision="fp16",
         )
         assert perf is not None
         return perf
@@ -161,46 +161,22 @@ class TestPerfQuantNVFP4:
         assert meta["bytes_per_element"] == 1
 
     def test_perf_nvfp4_vs_fp16_different(self):
-        """Perf with nvfp4 metadata should differ from fp16 (no metadata)."""
-        # Run without quant metadata
+        """FP16 remains usable while NVFP4 metadata is rejected on gfx1200."""
         analysis_no_quant = self._run_analysis(metadata=None)
-        analysis_dir = self.tmp_path / "analysis"
-        analysis_path = analysis_dir / "analysis.yaml"
-
+        analysis_path = self.tmp_path / "analysis" / "analysis.yaml"
         perf_no_quant = self._run_perf(analysis_path, metadata=None)
-
-        # Clean and re-run with nvfp4 metadata
-        (self.tmp_path / "perf").rename(self.tmp_path / "perf_fp16")
-
-        analysis_quant = self._run_analysis(metadata=NVFP4_METADATA)
-        perf_quant = self._run_perf(analysis_path, metadata=NVFP4_METADATA)
-
-        # bytes_per_element should be different
         assert perf_no_quant["workload"]["bytes_per_element"] == 2
-        assert perf_quant["workload"]["bytes_per_element"] == 0.5
 
-        # MAC key should be different
-        assert perf_no_quant["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_fp16_tc"
-        assert perf_quant["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_nvfp4_tc"
-
-        # MAC_per_cycle should be higher for nvfp4 (2x fp8, 4x fp16)
-        assert perf_quant["arch"]["MAC_per_cycle"] > perf_no_quant["arch"]["MAC_per_cycle"]
-
-        # Memory bytes should be smaller for nvfp4 (0.5 vs 2 bytes per element)
-        assert perf_quant["unfused"]["memory_bytes"] < perf_no_quant["unfused"]["memory_bytes"]
-        assert perf_quant["fused"]["memory_bytes"] < perf_no_quant["fused"]["memory_bytes"]
-
-        # Runtime should be different
-        assert perf_quant["fused"]["runtime_ms"] != perf_no_quant["fused"]["runtime_ms"]
+        self._run_analysis(metadata=NVFP4_METADATA)
+        with pytest.raises(ValueError, match="NVFP4"):
+            self._run_perf(analysis_path, metadata=NVFP4_METADATA)
 
     def test_perf_nvfp4_has_quant_label(self):
-        """Perf output should include quant_orig_dtype when metadata exists."""
+        """NVFP4 metadata must never silently fall back to another precision."""
         self._run_analysis(metadata=NVFP4_METADATA)
         analysis_path = self.tmp_path / "analysis" / "analysis.yaml"
-        perf = self._run_perf(analysis_path, metadata=NVFP4_METADATA)
-
-        assert "quant_orig_dtype" in perf["workload"]
-        assert "nvfp4" in perf["workload"]["quant_orig_dtype"]
+        with pytest.raises(ValueError, match="unsupported"):
+            self._run_perf(analysis_path, metadata=NVFP4_METADATA)
 
     def test_perf_no_quant_no_label(self):
         """Perf output should NOT include quant_orig_dtype without metadata."""
@@ -284,7 +260,7 @@ def _run_pipeline_from_source(tmp_path: Path, source: str) -> Path:
 
 
 class TestPerfSMCycles:
-    """Test that other_ops drive compute_sm_cycles in perf model."""
+    """Test that other_ops drive compute_scalar_cycles in perf model."""
 
     def _analyze_and_predict(self, tmp_path, source):
         einsum_dir = _run_pipeline_from_source(tmp_path, source)
@@ -304,14 +280,14 @@ class TestPerfSMCycles:
         model = EinsumGraphPerfModel()
         perf = model.predict(
             str(analysis_dir / "analysis.yaml"), str(perf_dir),
-            arch_config="B200", precision="fp16",
+            arch_config="RX_9060_XT", precision="fp16",
         )
         assert perf is not None
         return analysis, perf
 
     def test_elementwise_only_sm_cycles_nonzero(self, tmp_path):
         """Elementwise-only model: other_ops > 0, macs == 0.
-        compute_sm_cycles > 0 (informational), but compute_cycles = tc_cycles
+        compute_scalar_cycles > 0 (informational), but compute_cycles = tc_cycles
         because elementwise ops are memory-bound and already captured by
         memory cycles in the roofline model."""
         analysis, perf = self._analyze_and_predict(tmp_path, ELEMENTWISE_MODEL_SOURCE)
@@ -319,9 +295,9 @@ class TestPerfSMCycles:
         assert analysis["total"]["macs"] == 0
         assert analysis["total"]["other_ops"] > 0
 
-        assert perf["unfused"]["compute_tc_cycles"] == 0
-        assert perf["unfused"]["compute_sm_cycles"] > 0
-        assert perf["unfused"]["compute_cycles"] == perf["unfused"]["compute_tc_cycles"]
+        assert perf["unfused"]["compute_matrix_cycles"] == 0
+        assert perf["unfused"]["compute_scalar_cycles"] > 0
+        assert perf["unfused"]["compute_cycles"] == perf["unfused"]["compute_matrix_cycles"]
 
     def test_elementwise_only_total_other_ops_in_workload(self, tmp_path):
         """Perf output should include total_other_ops."""
@@ -336,42 +312,41 @@ class TestPerfSMCycles:
         assert analysis["total"]["macs"] > 0
         assert analysis["total"]["other_ops"] > 0
 
-        assert perf["fused"]["compute_tc_cycles"] > 0
+        assert perf["fused"]["compute_matrix_cycles"] > 0
         assert perf["workload"]["total_other_ops"] > 0
         assert perf["fused"]["compute_cycles"] == max(
-            perf["fused"]["compute_tc_cycles"],
-            perf["fused"]["compute_sm_cycles"],
+            perf["fused"]["compute_matrix_cycles"],
+            perf["fused"]["compute_scalar_cycles"],
         )
 
     def test_matmul_only_sm_cycles_zero(self, tmp_path):
-        """Pure matmul model: other_ops == 0, compute_sm_cycles == 0."""
+        """Pure matmul model: other_ops == 0, compute_scalar_cycles == 0."""
         _, perf = self._analyze_and_predict(tmp_path, MATMUL_MODEL_SOURCE)
 
-        assert perf["unfused"]["compute_tc_cycles"] > 0
-        assert perf["unfused"]["compute_sm_cycles"] == 0
-        assert perf["unfused"]["compute_cycles"] == perf["unfused"]["compute_tc_cycles"]
+        assert perf["unfused"]["compute_matrix_cycles"] > 0
+        assert perf["unfused"]["compute_scalar_cycles"] == 0
+        assert perf["unfused"]["compute_cycles"] == perf["unfused"]["compute_matrix_cycles"]
 
     def test_sm_cycles_consistent_across_models(self, tmp_path):
-        """compute_tc_cycles and compute_sm_cycles are the same in unfused/fused/prefetched."""
+        """compute_matrix_cycles and compute_scalar_cycles are the same in unfused/fused/prefetched."""
         _, perf = self._analyze_and_predict(tmp_path, MATMUL_RELU_MODEL_SOURCE)
 
         for model in ["unfused", "fused", "fused_prefetched"]:
-            assert perf[model]["compute_tc_cycles"] == perf["unfused"]["compute_tc_cycles"]
-            assert perf[model]["compute_sm_cycles"] == perf["unfused"]["compute_sm_cycles"]
+            assert perf[model]["compute_matrix_cycles"] == perf["unfused"]["compute_matrix_cycles"]
+            assert perf[model]["compute_scalar_cycles"] == perf["unfused"]["compute_scalar_cycles"]
             assert perf[model]["compute_cycles"] == perf["unfused"]["compute_cycles"]
 
     def test_arch_has_sm_throughput(self, tmp_path):
         """Perf output should include MAC_per_cycle_fp32_sm from arch."""
         _, perf = self._analyze_and_predict(tmp_path, ELEMENTWISE_MODEL_SOURCE)
-        assert perf["arch"]["MAC_per_cycle_fp32_sm"] > 0
+        assert perf["arch"]["scalar_operations_per_cycle"] > 0
 
 
 class TestPerfPrecisions:
     """Test that different FP precisions produce different perf results.
 
-    B200 has distinct throughputs for each precision:
-        fp32_sm  < tf32_tc  < fp16_tc = bf16_tc  < fp8_tc  < nvfp4_tc
-    And bytes_per_element: fp32=4, fp16=bf16=2, fp8=int8=1, nvfp4=0.5
+    RX 9060 XT has published FP32, FP16/BF16, and FP8 throughput.
+    NVFP4 remains a readable metadata width but is not executable on gfx1200.
     """
 
     @pytest.fixture(autouse=True)
@@ -395,7 +370,7 @@ class TestPerfPrecisions:
         model = EinsumGraphPerfModel()
         perf = model.predict(
             str(self.analysis_path), str(perf_dir),
-            arch_config="B200", precision=precision,
+            arch_config="RX_9060_XT", precision=precision,
         )
         assert perf is not None, f"Predict failed for precision={precision}"
         return perf
@@ -403,26 +378,26 @@ class TestPerfPrecisions:
     def test_fp32_uses_sm_key(self):
         """fp32 should fall back to fp32_tc (or fp32_sm) key."""
         perf = self._predict("fp32")
-        assert "fp32" in perf["arch"]["mac_per_cycle_key"]
+        assert perf["arch"]["throughput_precision"] == "fp32"
 
     def test_fp16_uses_fp16_tc(self):
         perf = self._predict("fp16")
-        assert perf["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_fp16_tc"
+        assert perf["arch"]["throughput_precision"] == "fp16"
 
     def test_bf16_uses_bf16_tc(self):
         perf = self._predict("bf16")
-        assert perf["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_bf16_tc"
+        assert perf["arch"]["throughput_precision"] == "bf16"
 
     def test_fp16_and_bf16_same_throughput(self):
         """FP16 and BF16 have identical tensor core throughput on B200."""
         perf_fp16 = self._predict("fp16")
         perf_bf16 = self._predict("bf16")
-        assert perf_fp16["arch"]["MAC_per_cycle"] == perf_bf16["arch"]["MAC_per_cycle"]
+        assert perf_fp16["arch"]["operations_per_cycle"] == perf_bf16["arch"]["operations_per_cycle"]
 
     def test_fp8_higher_throughput_than_fp16(self):
         perf_fp16 = self._predict("fp16")
         perf_fp8 = self._predict("fp8")
-        assert perf_fp8["arch"]["MAC_per_cycle"] > perf_fp16["arch"]["MAC_per_cycle"]
+        assert perf_fp8["arch"]["operations_per_cycle"] > perf_fp16["arch"]["operations_per_cycle"]
 
     def test_fp8_fewer_bytes_than_fp16(self):
         perf_fp16 = self._predict("fp16")
@@ -430,17 +405,14 @@ class TestPerfPrecisions:
         assert perf_fp8["workload"]["bytes_per_element"] < perf_fp16["workload"]["bytes_per_element"]
 
     def test_nvfp4_highest_throughput(self):
-        """NVFP4 should have highest MAC throughput of all precisions."""
-        perf_fp16 = self._predict("fp16")
-        perf_fp8 = self._predict("fp8")
-        perf_nvfp4 = self._predict("nvfp4")
-        assert perf_nvfp4["arch"]["MAC_per_cycle"] > perf_fp8["arch"]["MAC_per_cycle"]
-        assert perf_nvfp4["arch"]["MAC_per_cycle"] > perf_fp16["arch"]["MAC_per_cycle"]
+        """NVFP4 is rejected instead of mapped to an unrelated AMD format."""
+        with pytest.raises(ValueError, match="NVFP4"):
+            self._predict("nvfp4")
 
     def test_nvfp4_half_byte(self):
-        """NVFP4 uses 0.5 bytes per element."""
-        perf = self._predict("nvfp4")
-        assert perf["workload"]["bytes_per_element"] == 0.5
+        """Metadata width does not make NVFP4 executable on gfx1200."""
+        with pytest.raises(ValueError, match="NVFP4"):
+            self._predict("nvfp4")
 
     def test_fp32_four_bytes(self):
         perf = self._predict("fp32")
@@ -473,8 +445,9 @@ class TestPerfPrecisions:
 
     def test_all_precisions_produce_valid_output(self):
         """All supported precisions should produce valid perf dicts."""
-        for prec in ["fp32", "fp16", "bf16", "fp8", "nvfp4"]:
+        for prec in ["fp32", "fp16", "bf16", "fp8"]:
             perf = self._predict(prec)
             assert perf["workload"]["total_macs"] > 0
             assert perf["fused"]["total_cycles"] > 0
             assert perf["fused"]["runtime_ms"] > 0
+

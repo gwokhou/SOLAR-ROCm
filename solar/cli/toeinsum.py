@@ -45,7 +45,7 @@ Examples:
   solar-toeinsum --kernel-status --level level1
   
   # Architecture configuration
-  solar-toeinsum --level level1 --kernel-ids 1 --arch-config A6000
+  solar-toeinsum --level level1 --kernel-ids 1 --arch-config RX_9060_XT
   
   # Other options
   solar-toeinsum --list-analyses
@@ -106,8 +106,8 @@ Examples:
     )
     parser.add_argument(
         "--arch-config",
-        default="H100_PCIe",
-        help="Architecture configuration (e.g., H100_PCIe, A6000, H100_fp32)"
+        default="RX_9060_XT",
+        help="Architecture configuration (default: RX_9060_XT)"
     )
     parser.add_argument(
         "--enable-llm-agent",

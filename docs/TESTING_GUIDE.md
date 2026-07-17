@@ -7,6 +7,8 @@
 
 The Solar package includes comprehensive tests that validate the entire **5-stage analysis pipeline** and support **kernelbench** benchmark models. All test outputs use **human-readable YAML** without anchors or aliases.
 
+For the ROCm port, run `bash install_uv.sh` first. The test runner prefers the pinned `.venv` and the complete `all` target also collects the ROCm architecture, timing, calibration, evaluation, and scoring regression tests.
+
 ## Solar 5-Stage Pipeline
 
 ```
@@ -52,52 +54,52 @@ tests/
 
 ```bash
 # Run all tests (~4-5 minutes)
-bash run_tests.sh
+bash scripts/run_tests.sh
 
 # Quick smoke tests (~1 minute)
-bash run_tests.sh quick
+bash scripts/run_tests.sh quick
 
 # Run unit tests only (no integration)
-bash run_tests.sh unit
+bash scripts/run_tests.sh unit
 
 # Run integration tests only
-bash run_tests.sh integration
+bash scripts/run_tests.sh integration
 
 # Run example scripts
-bash run_tests.sh examples
+bash scripts/run_tests.sh examples
 ```
 
 ### Pipeline Stage Tests
 
 ```bash
 # Stage 1: Graph extraction (pytorch_graph.yaml)
-bash run_tests.sh graph
+bash scripts/run_tests.sh graph
 
 # Stage 2: Einsum conversion (einsum_graph.yaml, einsum_graph_renamed.yaml)
-bash run_tests.sh einsum
+bash scripts/run_tests.sh einsum
 
 # Stages 3-4: Analysis + performance (analysis.yaml, perf_*.yaml)
-bash run_tests.sh model
+bash scripts/run_tests.sh model
 ```
 
 ### Component Tests
 
 ```bash
 # LLM agent and node registry
-bash run_tests.sh llm
+bash scripts/run_tests.sh llm
 
 # Standalone BERT example (full 5-stage pipeline)
-bash run_tests.sh bert
+bash scripts/run_tests.sh bert
 ```
 
 ### Benchmark Compatibility
 
 ```bash
 # Test kernelbench models
-bash run_tests.sh kernelbench
+bash scripts/run_tests.sh kernelbench
 
 # Verbose output
-bash run_tests.sh all -v
+bash scripts/run_tests.sh all -v
 ```
 
 ### Using Pytest Directly
@@ -470,13 +472,13 @@ For CI pipelines, use a tiered approach:
 
 ```bash
 # Tier 1: Quick validation (on every commit)
-bash run_tests.sh quick
+bash scripts/run_tests.sh quick
 
 # Tier 2: Unit tests (on PR)
-bash run_tests.sh unit
+bash scripts/run_tests.sh unit
 
 # Tier 3: Full suite (on merge to main)
-bash run_tests.sh all
+bash scripts/run_tests.sh all
 ```
 
 ### GitHub Actions Workflow (example)
@@ -504,7 +506,7 @@ jobs:
     
     - name: Run quick tests
       run: |
-        bash run_tests.sh quick
+        bash scripts/run_tests.sh quick
 
   full-tests:
     name: Full Test Suite
@@ -528,7 +530,7 @@ jobs:
     
     - name: Run all tests with coverage
       run: |
-        bash run_tests.sh all
+        bash scripts/run_tests.sh all
         python3 -m pytest tests/ --cov=solar --cov-report=xml
     
     - name: Upload coverage
@@ -639,7 +641,7 @@ Solar includes several example models in `examples/`:
 
 ```bash
 # Run all examples
-bash run_tests.sh examples
+bash scripts/run_tests.sh examples
 
 # Or run individual examples
 cd examples/DenseAttention && bash run_solar.sh
@@ -683,15 +685,15 @@ Approximate execution times on a typical development machine:
 
 | Test Category | Tests | Time | Command |
 |--------------|-------|------|---------|
-| Quick smoke tests | 2 | ~1 min | `bash run_tests.sh quick` |
-| Graph processing | 10 | ~50 sec | `bash run_tests.sh graph` |
-| Einsum analyzer | 15 | ~37 sec | `bash run_tests.sh einsum` |
-| Model analyzer | 15 | ~39 sec | `bash run_tests.sh model` |
-| LLM agent | 20 | ~39 sec | `bash run_tests.sh llm` |
-| BERT example | 1 | ~44 sec | `bash run_tests.sh bert` |
-| Integration | 6 | ~48 sec | `bash run_tests.sh integration` |
-| Examples | 6 | ~3 min | `bash run_tests.sh examples` |
-| **All tests** | **~70** | **~5-6 min** | `bash run_tests.sh` |
+| Quick smoke tests | 2 | ~1 min | `bash scripts/run_tests.sh quick` |
+| Graph processing | 10 | ~50 sec | `bash scripts/run_tests.sh graph` |
+| Einsum analyzer | 15 | ~37 sec | `bash scripts/run_tests.sh einsum` |
+| Model analyzer | 15 | ~39 sec | `bash scripts/run_tests.sh model` |
+| LLM agent | 20 | ~39 sec | `bash scripts/run_tests.sh llm` |
+| BERT example | 1 | ~44 sec | `bash scripts/run_tests.sh bert` |
+| Integration | 6 | ~48 sec | `bash scripts/run_tests.sh integration` |
+| Examples | 6 | ~3 min | `bash scripts/run_tests.sh examples` |
+| **All tests** | **~70** | **~5-6 min** | `bash scripts/run_tests.sh` |
 
 ## Next Steps
 
@@ -700,3 +702,4 @@ Approximate execution times on a typical development machine:
 3. Add mutation testing for critical paths
 4. Create test data generators for complex transformer models
 5. Add CI/CD pipeline configuration for automated testing
+

@@ -5,6 +5,8 @@
 
 Solar is a toolkit for analyzing PyTorch model graphs, converting them to einsum representations, and performing hardware-aware SOL performance predictions.
 
+This ROCm port keeps the original five-stage analysis pipeline and adds an executable benchmarking path for AMD GPUs. The first validated target is the Radeon RX 9060 XT (`gfx1200`) on ROCm 7.2.
+
 ## Features
 
 - **5-Stage Analysis Pipeline**: Seamless conversion from PyTorch models to performance predictions
@@ -12,27 +14,22 @@ Solar is a toolkit for analyzing PyTorch model graphs, converting them to einsum
 - **Einsum Conversion**: Convert PyTorch operations to einsum notation with automatic rank renaming
 - **Graph Visualization**: Generate PDF visualizations of einsum graphs
 - **Hardware-Independent Analysis**: Compute MACs, FLOPs, and memory footprints
-- **Performance Prediction**: Architecture-aware roofline modeling (H100, A6000, etc.)
+- **Performance Prediction**: Architecture-aware roofline modeling (H100, A6000, RX 9060 XT, etc.)
+- **Executable ROCm Evaluation**: Auditable PyTorch, Triton, HIP/C++, and AMD library kernel timing
 - **Timeloop / Orojenesis Export**: Convert to Timeloop workload format for architectural exploration
 - **Benchmark Support**: Native support for kernelbench benchmark suites
 - **Human-Readable YAML**: All outputs use clean YAML without anchors/aliases
 
 ## Installation
 
+The ROCm build supports Linux x86_64 and uses a pinned environment:
+
 ```bash
-# Install Solar in development mode
-cd solar
-pip install -e .
+bash install_uv.sh
+uv run solar-rocm-doctor
 ```
 
-Dependencies:
-```bash
-# Core dependencies are in requirements.txt
-pip install -r requirements.txt
-
-# For graph visualization (optional)
-pip install graphviz matplotlib
-```
+Install the system Graphviz package separately if PDF rendering is needed.
 
 ## The 5-Stage Pipeline
 
@@ -81,7 +78,7 @@ bash run_solar.sh
 #   - output/einsum/einsum_graph_renamed.yaml   (Stage 2 - with BFS rank renaming)
 #   - output/einsum/einsum_graph.pdf            (Stage 2 - visualization)
 #   - output/analysis/analysis.yaml             (Stage 3)
-#   - output/perf/perf_H100_PCIe.yaml           (Stage 4)
+#   - output/perf/perf_Radeon_RX_9060_XT.yaml           (Stage 4)
 #   - output/timeloop/timeloop_graph.yaml       (Stage 5)
 ```
 
@@ -94,7 +91,7 @@ Process benchmark models:
 solar-toeinsum --level level1 --kernel-ids 1 2 3
 
 # Use different architecture
-solar-toeinsum --level level1 --kernel-ids 1 --arch-config B200
+solar-toeinsum --level level1 --kernel-ids 1 --arch-config RX_9060_XT
 ```
 
 ## CLI Commands
@@ -116,11 +113,25 @@ solar-analyze-model --einsum-graph-path output/einsum/einsum_graph_renamed.yaml 
 
 # Stage 4: Predict performance
 solar-predict-perf-model --analysis-path output/analysis/analysis.yaml \
-                         --output-dir output/perf --arch-config H100_PCIe
+                         --output-dir output/perf --arch-config RX_9060_XT
 
 # Stage 5: Convert to Timeloop format
 solar-totimeloop --einsum-graph-path output/einsum/einsum_graph_renamed.yaml \
                  --output-dir output/timeloop
+```
+
+## Executable ROCm Evaluation
+
+ROCm evaluation keeps benchmark, solution, and versioned baseline documents
+separate. See [the ROCm benchmark guide](docs/ROCM_BENCHMARKING.md) for the
+schema, timing profiles, clock policy, and publishability rules.
+
+```bash
+solar-evaluate \
+  --benchmark examples/rocm_matmul/benchmark.yaml \
+  --solution examples/rocm_matmul/solution.yaml \
+  --timing-profile quick --no-lock-clocks \
+  --output evaluation.yaml
 ```
 
 ## Output File Formats
@@ -139,28 +150,28 @@ All output files use **human-readable YAML** without anchors/aliases:
 
 ```bash
 # Run all tests
-bash run_tests.sh
+bash scripts/run_tests.sh
 
 # Quick smoke tests
-bash run_tests.sh quick
+bash scripts/run_tests.sh quick
 
 # Run specific test categories
-bash run_tests.sh graph      # Graph processing tests
-bash run_tests.sh einsum     # Einsum analyzer tests
-bash run_tests.sh unit       # All unit tests
-bash run_tests.sh integration # Integration tests
+bash scripts/run_tests.sh graph      # Graph processing tests
+bash scripts/run_tests.sh einsum     # Einsum analyzer tests
+bash scripts/run_tests.sh unit       # All unit tests
+bash scripts/run_tests.sh integration # Integration tests
 
 # Test examples
-bash run_tests.sh examples   # Run all example scripts
+bash scripts/run_tests.sh examples   # Run all example scripts
 
 # Test benchmark compatibility
-bash run_tests.sh kernelbench
+bash scripts/run_tests.sh kernelbench
 
 # Verbose output
-bash run_tests.sh all -v
+bash scripts/run_tests.sh all -v
 ```
 
-See `TESTING_GUIDE.md` for detailed testing documentation.
+See [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) for detailed testing documentation.
 
 ## Python API
 
@@ -220,7 +231,7 @@ perf_model = EinsumGraphPerfModel()
 perf = perf_model.predict(
     "outputs/my_model/analysis.yaml",
     "outputs/my_model",
-    arch_config="H100_PCIe"
+    arch_config="RX_9060_XT"
 )
 ```
 
@@ -249,7 +260,7 @@ solar/
 │   └── cli/           # Command-line interfaces
 ├── tests/             # Comprehensive test suite
 ├── examples/          # Example models (Attention, BERT, sparse attention variants)
-└── configs/           # Architecture configs (H100_PCIe.yaml, A6000.yaml)
+└── configs/           # Architecture configs (H100_PCIe.yaml, A6000.yaml, RX_9060_XT.yaml)
 ```
 
 ## Key Components
@@ -274,14 +285,16 @@ solar/
 - Follow Google's Python Style Guide
 - Add tests for new features
 - Update documentation for API changes
-- Run `bash run_tests.sh` before submitting PRs
+- Run `bash scripts/run_tests.sh` before submitting PRs
 
 ## Documentation
 
-- `TESTING_GUIDE.md`: Comprehensive testing documentation
+- [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md): Comprehensive testing documentation
+- [`docs/ROCM_BENCHMARKING.md`](docs/ROCM_BENCHMARKING.md): Executable ROCm benchmarking
 - `REFACTORING_SUMMARY.md`: Design decisions and refactoring history
 - `MIGRATION_COMPLETE.md`: Migration guide from legacy JSON format
 
 ## License
 
-MIT License
+Apache License 2.0
+

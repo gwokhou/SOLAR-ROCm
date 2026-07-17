@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+name: rocm_fp16_matmul
+precision: fp16
+cache_policy: cold
+reference:
+  source: reference.py
+  input_factory: get_inputs
+  entry_point: run
+tolerance:
+  atol: 0.01
+  rtol: 0.01
+workloads:
+  - name: n1024
+    parameters: {n: 1024}
+    flops: 2147483648
+    fused_bytes: 6291456
+  - name: n2048
+    parameters: {n: 2048}
+    flops: 17179869184
+    fused_bytes: 25165824

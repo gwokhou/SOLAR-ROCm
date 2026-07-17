@@ -1,5 +1,7 @@
 # Solar Scripts
 
+> ROCm note: use `bash scripts/run_tests.sh` for the current test suite and see [`docs/ROCM_BENCHMARKING.md`](../docs/ROCM_BENCHMARKING.md) for executable GPU evaluation. The remaining sections are retained from upstream for pipeline compatibility and history.
+
 This directory contains utility scripts for running and analyzing Solar pipeline results.
 
 ## Scripts
@@ -266,3 +268,4 @@ python3 collect_perf_results.py --arch A100       # outputs results_A100.csv
 # Re-run all phases for kernels that failed
 ./run_kernelbench_perf.sh --phase all level1 1 10
 ```
+

@@ -5,8 +5,9 @@
 # Install with: pip install -r requirements.txt
 
 # Core
-torch>=2.0.0
-torchview>=0.2.6
+# Install Linux/x86_64 wheels from https://download.pytorch.org/whl/rocm7.2.
+torch==2.11.0+rocm7.2; sys_platform == 'linux' and platform_machine == 'x86_64'
+triton-rocm==3.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'
 networkx>=3.0
 pyyaml>=6.0
 numpy>=1.24.0

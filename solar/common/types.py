@@ -166,7 +166,7 @@ class ArchitectureConfig:
     """Hardware architecture configuration.
     
     Attributes:
-        name: Architecture name (e.g., 'H100_PCIe').
+        name: Architecture name (for example, 'RX_9060_XT').
         freq_ghz: Frequency in GHz.
         mac_per_cycle: MAC operations per cycle for different precisions.
         dram_bandwidth: DRAM bandwidth in bytes per cycle.

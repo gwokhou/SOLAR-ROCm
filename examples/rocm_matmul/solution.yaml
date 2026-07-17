@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+name: torch_mm
+backend: pytorch
+gfx_targets: [gfx1200]
+entry_point: solution.py::run
+sources:
+  - path: solution.py
+    sha256: 6b8034e221502625e08f3c03a70e1369ccfc1969312c3728b3b64566ca4a14c8

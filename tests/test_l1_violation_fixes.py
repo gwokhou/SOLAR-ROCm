@@ -15,6 +15,7 @@ is proportional to the actual workload size, not hardcoded maximums.
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,13 +26,12 @@ VENV_PYTHON = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
 SOLAR_ROOT = Path(__file__).resolve().parents[1]
 SOL_BENCH = Path(__file__).resolve().parents[2].parent / "sol-bench" / "data" / "benchmark"
 
-# Nestor results for comparison
-NESTOR_PATH = (
-    Path(__file__).resolve().parents[2].parent
-    / "performance_comparison_complete_20260310"
-    / "b200_data"
-    / "nestor_20260307"
-    / "L1_nestor_results.json"
+# Optional external reference results for diagnostic comparisons.  The test
+# remains self-contained when this path is not supplied.
+REFERENCE_RESULTS_PATH = (
+    Path(os.environ["SOLAR_REFERENCE_RESULTS"])
+    if os.environ.get("SOLAR_REFERENCE_RESULTS")
+    else None
 )
 
 
@@ -120,7 +120,7 @@ def run_solar_pipeline(kernel_name: str, level: str, max_workloads: int = 3):
                     "--analysis-path",
                     str(wl_out / "analysis" / "analysis.yaml"),
                     "--output-dir", str(wl_out / "perf"),
-                    "--arch-config", "B200",
+                    "--arch-config", "RX_9060_XT",
                     "--precision", "fp16",
                 ],
                 cwd=str(SOLAR_ROOT),
@@ -128,7 +128,7 @@ def run_solar_pipeline(kernel_name: str, level: str, max_workloads: int = 3):
                 capture_output=True,
             )
 
-            perf_file = wl_out / "perf" / "perf_B200.yaml"
+            perf_file = wl_out / "perf" / "perf_Radeon_RX_9060_XT.yaml"
             with open(perf_file) as f:
                 results[wid] = yaml.safe_load(f)
 
@@ -136,10 +136,10 @@ def run_solar_pipeline(kernel_name: str, level: str, max_workloads: int = 3):
 
 
 def load_nestor(kernel_name: str):
-    """Load Nestor results for a kernel."""
-    if not NESTOR_PATH.exists():
+    """Load optional external reference results (legacy helper name)."""
+    if REFERENCE_RESULTS_PATH is None or not REFERENCE_RESULTS_PATH.exists():
         return {}
-    with open(NESTOR_PATH) as f:
+    with open(REFERENCE_RESULTS_PATH) as f:
         data = json.load(f)
     return {
         r["workload_id"]: r
@@ -173,20 +173,20 @@ def test_xiaomimimo_no_hardcoded_batch():
             f"batch_size may still be hardcoded"
         )
 
-    # Check against Nestor for violations
-    nestor = load_nestor(kernel)
+    # Optionally compare against externally supplied reference measurements.
+    reference_results = load_nestor(kernel)
     violations = 0
     for wid in sorted(results):
         fused_ms = results[wid]["fused"]["runtime_ms"]
         fused_bytes = results[wid]["fused"]["memory_bytes"]
-        n = nestor.get(wid)
+        n = reference_results.get(wid)
         if n:
             nopt = n["optimized_latency_ms"]
             ratio = nopt / fused_ms if fused_ms > 0 else float("inf")
             status = "VIOLATION" if ratio < 1.0 else "ok"
             if ratio < 1.0:
                 violations += 1
-            print(f"  WL{wid}: SOL={fused_ms:.6f}ms mem={fused_bytes:,} Nestor={nopt:.6f}ms ratio={ratio:.2f}x [{status}]")
+            print(f"  WL{wid}: SOL={fused_ms:.6f}ms mem={fused_bytes:,} reference={nopt:.6f}ms ratio={ratio:.2f}x [{status}]")
 
     print(f"  Result: {violations} violations (previously 10 with hardcoded batch)")
     # We expect significantly fewer violations than the original 10
@@ -218,19 +218,19 @@ def test_deepseek_v3_active_experts_only():
             f"still counting all experts (expected <5 GB with top-k=8)"
         )
 
-    # Check against Nestor for violations
-    nestor = load_nestor(kernel)
+    # Optionally compare against externally supplied reference measurements.
+    reference_results = load_nestor(kernel)
     violations = 0
     for wid in sorted(results):
         fused_ms = results[wid]["fused"]["runtime_ms"]
-        n = nestor.get(wid)
+        n = reference_results.get(wid)
         if n:
             nopt = n["optimized_latency_ms"]
             ratio = nopt / fused_ms if fused_ms > 0 else float("inf")
             status = "VIOLATION" if ratio < 1.0 else "ok"
             if ratio < 1.0:
                 violations += 1
-            print(f"  WL{wid}: SOL={fused_ms:.6f}ms Nestor={nopt:.6f}ms ratio={ratio:.2f}x [{status}]")
+            print(f"  WL{wid}: SOL={fused_ms:.6f}ms reference={nopt:.6f}ms ratio={ratio:.2f}x [{status}]")
 
     print(f"  Result: {violations} violations (previously 5 with all experts)")
     assert violations == 0, f"Violations still present: {violations}"

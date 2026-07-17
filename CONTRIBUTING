@@ -49,7 +49,7 @@
 #### Pull Requests
 Developer workflow for code contributions is as follows:
 
-1. Developers must first [fork](https://help.github.com/en/articles/fork-a-repo) the [upstream](https://github.com/nvidia/SOLAR) SOLAR OSS repository.
+1. Developers must first [fork](https://help.github.com/en/articles/fork-a-repo) the [SOLAR ROCm repository](https://github.com/gwokhou/SOLAR-ROCm).
 
 2. Git clone the forked repository and push changes to the personal fork.
 
@@ -67,7 +67,7 @@ git push -u origin <local-branch>:<remote-branch>
   * Atleast one SOLAR engineer will be assigned for the review.
   * While under review, mark your PRs as work-in-progress by prefixing the PR title with [WIP].
 
-4. Since there is no CI/CD process in place yet, the PR will be accepted and the corresponding issue closed only after adequate testing has been completed, manually, by the developer and/or TensorRT engineer reviewing the code.
+4. A pull request is accepted only after adequate testing has been completed and a SOLAR ROCm maintainer has reviewed the change.
 
 
 #### Signing Your Work

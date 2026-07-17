@@ -121,7 +121,7 @@ Produced by `solar.analysis.graph_analyzer`.
 | `einsum_equation` | `str` | Einsum string |
 | `is_real_einsum` | `bool` | MAC-producing or not |
 | `macs` | `int` | Multiply-accumulate operations (non-zero only for `is_real_einsum: true`) |
-| `other_ops` | `int` | CUDA-core elementwise/reduction ops |
+| `other_ops` | `int` | Scalar/vector elementwise and reduction operations |
 | `flops` | `int` | `2 * macs` |
 | `unfused_elements` | `int` | `input_elements + output_elements` (all DRAM traffic if nothing fused) |
 | `orojenesis_elements` | `int \| null` | Reserved (null when orojenesis disabled) |
@@ -186,12 +186,13 @@ Produced by `solar.perf.perf_model`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `str` | Architecture config name (e.g. `H100_PCIe`, `B200`) |
-| `freq_GHz` | `float` | Clock frequency |
-| `DRAM_byte_per_cycle` | `float` | Memory bandwidth in bytes/cycle |
-| `mac_per_cycle_key` | `str` | Which throughput key was selected |
-| `MAC_per_cycle` | `float` | Throughput used for TC cycles |
-| `MAC_per_cycle_fp32_sm` | `float` | SM (CUDA core) throughput |
+| `name` | `str` | Architecture config name (for example `Radeon_RX_9060_XT`) |
+| `clock_hz` | `float` | Clock frequency in Hz |
+| `memory_bandwidth_bytes_per_second` | `float` | Published memory bandwidth |
+| `throughput_precision` | `str` | Precision used for matrix throughput |
+| `operations_per_cycle` | `float` | Matrix-operation throughput used for cycle diagnostics |
+| `scalar_operations_per_cycle` | `float` | Scalar/vector throughput used for diagnostics |
+| `peak_ops_per_second` | `mapping` | Precision-keyed published operation throughput |
 | `ridge_point` | `float` | Arithmetic intensity at roofline knee |
 
 ### `workload` dict
@@ -211,9 +212,9 @@ Produced by `solar.perf.perf_model`.
 | `description` | `str` | Human-readable model description |
 | `memory_elements` | `int` | Total DRAM-accessed elements |
 | `memory_bytes` | `int` | `memory_elements * bytes_per_element` |
-| `compute_tc_cycles` | `int` | Tensor-core cycles (`macs / MAC_per_cycle`) |
-| `compute_sm_cycles` | `int` | SM cycles (informational; not included in SOL) |
-| `compute_cycles` | `int` | `compute_tc_cycles` (SM excluded from SOL) |
+| `compute_matrix_cycles` | `int` | Matrix-operation cycles (informational) |
+| `compute_scalar_cycles` | `int` | Scalar/vector cycles (informational; not included in SOL) |
+| `compute_cycles` | `int` | Matrix-operation cycles used in SOL |
 | `memory_cycles` | `int` | `memory_bytes / DRAM_byte_per_cycle` |
 | `total_cycles` | `int` | `max(compute_cycles, memory_cycles)` |
 | `runtime_ms` | `float` | `total_cycles / (freq_GHz * 1e6)` |

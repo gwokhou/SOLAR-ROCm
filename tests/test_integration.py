@@ -113,11 +113,11 @@ class TestKernelbenchIntegration:
             perf = perf_model.predict(
                 kernel_output / "analysis.yaml",
                 kernel_output,
-                arch_config="H100_PCIe",
+                arch_config="RX_9060_XT",
                 precision="fp32",
             )
             assert perf is not None
-            assert (kernel_output / "perf_H100_PCIe.yaml").exists()
+            assert (kernel_output / "perf_Radeon_RX_9060_XT.yaml").exists()
     
     def test_kernelbench_batch_processing(self):
         """Test processing multiple kernelbench models."""
@@ -152,5 +152,4 @@ class TestKernelbenchIntegration:
             for i in range(1, 4):
                 kernel_output = output_dir / "level1" / str(i)
                 assert kernel_output.exists()
-
 

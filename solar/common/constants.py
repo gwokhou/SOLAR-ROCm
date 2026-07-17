@@ -33,6 +33,7 @@ BYTES_PER_ELEMENT = {
     "fp16": 2, 
     "bf16": 2,
     "int8": 1,
+    "int4": 0.5,
     "fp64": 8,
     "fp8": 1,
     "nvfp4": 0.5,

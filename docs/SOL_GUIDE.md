@@ -30,7 +30,7 @@ runtime_cycles = max(compute_cycles, memory_cycles)
 ```
 
 Where:
-- `compute_cycles = max(total_macs / MAC_per_cycle_tc, total_other_ops / MAC_per_cycle_sm)`
+- `compute_cycles = total_matrix_macs / matrix_operations_per_cycle`
 - `memory_cycles = total_memory_bytes / DRAM_byte_per_cycle`
 - **Arithmetic Intensity** = total_macs / total_memory_bytes
 
@@ -98,7 +98,7 @@ runtime_ms         = fused_total_cycles / (freq_GHz × 1e6)
 A single whole-graph roofline is applied. Intermediate tensors are assumed to stay in cache/registers.
 
 ### When to Use
-- Operator fusion scenarios (e.g., cuDNN fused kernels)
+- Operator fusion scenarios (for example, MIOpen or compiler-fused kernels)
 - When intermediate tensors fit in L2 cache
 - Realistic estimate for modern GPU execution
 
@@ -166,7 +166,7 @@ Single roofline applied to (Total FLOPs, Total Memory)
 total:
   macs: 1000000                    # Total multiply-accumulate operations
   flops: 2000000                   # Total floating-point operations (2 × MACs)
-  other_ops: 50000                 # Total elementwise/reduction ops (CUDA-core work)
+  other_ops: 50000                 # Total scalar/vector elementwise/reduction ops
   unfused_elements: 25000000       # Unfused memory elements (all tensor I/O)
   fused_elements: 10000000         # Fused memory elements (intermediates excluded)
   fused_prefetched_elements: 10000000  # Fused+prefetched elements (same as fused)
@@ -250,7 +250,7 @@ For discussion of multi-stream concurrency and PDL modeling implications, see [S
    - Debugging memory bottlenecks
 
 2. **Use Fused** when:
-   - Estimating performance with standard fusion (cuDNN, etc.)
+- Estimating performance with standard fusion (MIOpen, PyTorch compile, etc.)
    - Intermediate tensors fit in L2 cache
    - Most realistic estimate for modern GPUs
 
@@ -262,5 +262,5 @@ For discussion of multi-stream concurrency and PDL modeling implications, see [S
 ## References
 
 - Williams, S., Waterman, A., & Patterson, D. (2009). Roofline: An insightful visual performance model for multicore architectures.
-- NVIDIA cuDNN documentation on operator fusion
+- AMD ROCm documentation on operator fusion and library kernels
 - PyTorch compile / TorchInductor fusion strategies

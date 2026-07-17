@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+name: Radeon_RX_9060_XT
+vendor: AMD
+gfx_target: gfx1200
+compute_units: 32
+memory_capacity_bytes: 17179869184
+memory_bandwidth_bytes_per_second: 320000000000
+l2_bytes: 4194304
+last_level_cache_bytes: 33554432
+# Maximum boost clock used to express per-cycle diagnostics. The formal SOL
+# calculation uses the published per-second throughput and bandwidth below.
+clock_hz: 3130000000
+peak_ops_per_second:
+  fp32: 25600000000000
+  fp16: 103000000000000
+  bf16: 103000000000000
+  fp8: 205000000000000
+  int8: 205000000000000
+  int4: 410000000000000
+source: https://www.amd.com/en/products/specifications/graphics.html

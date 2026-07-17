@@ -109,7 +109,7 @@ class TestPyTorchProcessor:
         assert (output_dir / "pytorch_graph.yaml").exists()
     
     @patch('solar.graph.pytorch_processor._check_torchview_parameter_support')
-    @patch('torchview.draw_graph')
+    @patch('solar.graph.pytorch_processor.torchview.draw_graph')
     def test_generate_torchview_graph(self, mock_draw_graph, _mock_check):
         """Test torchview graph generation."""
         processor = PyTorchProcessor()
@@ -208,7 +208,7 @@ class TestDtypeExtraction:
         import torch
         import torch.nn as nn
         try:
-            from torchview import draw_graph
+            from solar._vendor.torchview import draw_graph
             TORCHVIEW_AVAILABLE = True
         except ImportError:
             pytest.skip("torchview not available")
@@ -266,7 +266,7 @@ class TestDtypeExtraction:
         import torch
         import torch.nn as nn
         try:
-            from torchview import draw_graph
+            from solar._vendor.torchview import draw_graph
             TORCHVIEW_AVAILABLE = True
         except ImportError:
             pytest.skip("torchview not available")

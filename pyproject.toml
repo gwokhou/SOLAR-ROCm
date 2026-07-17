@@ -65,6 +65,9 @@ solar-rocm-doctor = "solar.cli.rocm_doctor:main"
 solar-calibrate-rocm = "solar.cli.calibrate_rocm:main"
 solar-evaluate = "solar.cli.evaluate_rocm:main"
 solar-create-baseline = "solar.cli.create_baseline:main"
+solar-verify-source-to-sol = "solar.cli.verify_source_to_sol:main"
+solar-check-sol-execbench = "solar.cli.check_sol_execbench:main"
+solar-build-source-to-sol = "solar.cli.build_source_to_sol:main"
 
 [[tool.uv.index]]
 name = "pypi"
@@ -107,6 +110,7 @@ packages = [
     "solar.graph",
     "solar.perf",
     "solar.rocm",
+    "solar.verification",
 ]
 
 [tool.setuptools.package-dir]

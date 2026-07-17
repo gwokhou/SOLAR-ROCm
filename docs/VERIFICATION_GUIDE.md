@@ -3,12 +3,17 @@
 
 # Verification Guide
 
-SOLAR has two maintained verification layers:
+SOLAR has three maintained verification layers:
 
 1. graph/einsum regression tests verify that PyTorch operations are converted
    into the expected equations, shapes, costs, and memory accounting; and
 2. the ROCm evaluator executes a candidate and its benchmark reference on the
    same AMD device, comparing outputs before any timing or score is accepted.
+3. every benchmark workload carries a replayable source-to-SOL attestation:
+   its `verification.yaml` is an [in-toto Statement v1](https://in-toto.io/)
+   that binds the reference source, the einsum graph, workload parameters,
+   tolerance, and nine numerical checks (three seeds × random/zero/boundary
+   inputs).
 
 The original source and SPDX notices remain intact throughout the analysis
 pipeline. Verification does not require translating PyTorch's public
@@ -46,6 +51,39 @@ bash scripts/run_tests.sh examples
 The runner verifies that each example produces `pytorch_graph.yaml`,
 `einsum_graph_renamed.yaml`, `analysis.yaml`, and the default AMD performance
 prediction.
+
+## Source-to-SOL trusted chain
+
+`benchmark.yaml` uses only `schema_version: 2`. Each workload must bind:
+
+```text
+reference.py --SHA-256--> verification.yaml --SHA-256--> einsum_graph.yaml
+                                                     └--> analysis.yaml
+```
+
+The attestation is not accepted merely because it says `passed`: loading a
+benchmark verifies its hash, validates every in-toto subject and predicate
+binding, then reruns the exact recorded cases on the recorded CPU or ROCm
+device. Analysis is independently rerun from the same graph. If any link is
+absent, stale, unsupported, or numerically different, TSOL and SOL Score are
+withheld.
+
+Create or refresh all attestations after changing a reference, graph, or
+workload parameters:
+
+```bash
+solar-verify-source-to-sol \
+  --benchmark examples/rocm_matmul/benchmark.yaml \
+  --device cuda \
+  --update-manifest
+```
+
+The conversion and analysis CLIs have an `--official` mode. It rejects empty
+equations, unsupported operations, missing per-tensor dtypes, implicit dtype
+fallback, and unverified LLM-generated handlers. Generated handlers are only
+cached after the built-in verifier compares their executable subgraph against
+the resolved PyTorch operation on independent random, zero, and boundary
+inputs.
 
 ## Executable ROCm correctness
 

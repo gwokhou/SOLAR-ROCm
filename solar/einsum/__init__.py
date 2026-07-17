@@ -41,13 +41,26 @@ File naming convention:
 """
 
 from solar.einsum.analyzer import EinsumAnalyzer
+from solar.einsum.semantics import (
+    EINSUM_GRAPH_SCHEMA_VERSION,
+    SemanticGraphError,
+    annotate_semantics,
+    validate_semantic_graph,
+)
 
 # Main converters (new names)
-from solar.einsum.pytorch_to_einsum import PyTorchToEinsum
+from solar.einsum.pytorch_to_einsum import ConversionError, PyTorchToEinsum
 from solar.einsum.einsum_rank_renamer import EinsumRankRenamer, rename_einsum_ranks
 from solar.einsum.einsum_to_timeloop import EinsumToTimeloop, convert_to_timeloop
-from solar.einsum.einsum_to_taco import EinsumToTaco, generate_taco_expression, add_taco_expressions
-from solar.einsum.einsum_graph_visualizer import EinsumGraphVisualizer, save_einsum_graph_pdf
+from solar.einsum.einsum_to_taco import (
+    EinsumToTaco,
+    generate_taco_expression,
+    add_taco_expressions,
+)
+from solar.einsum.einsum_graph_visualizer import (
+    EinsumGraphVisualizer,
+    save_einsum_graph_pdf,
+)
 from solar.einsum.graph_expander import GraphExpander
 
 # Backward compatibility aliases
@@ -77,8 +90,13 @@ from solar.einsum.node_type_registry import (
 __all__ = [
     # Core analyzer
     "EinsumAnalyzer",
+    "EINSUM_GRAPH_SCHEMA_VERSION",
+    "SemanticGraphError",
+    "annotate_semantics",
+    "validate_semantic_graph",
     # Main converters (new names)
     "PyTorchToEinsum",
+    "ConversionError",
     "EinsumRankRenamer",
     "EinsumToTimeloop",
     "EinsumToTaco",

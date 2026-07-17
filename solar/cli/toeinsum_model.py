@@ -48,6 +48,14 @@ def main() -> None:
         description="Convert a single PyTorch graph (pytorch_graph.yaml) to an einsum graph (einsum_graph.yaml).",
     )
     parser.add_argument(
+        "--official",
+        action="store_true",
+        help=(
+            "Fail closed on unsupported operations, empty equations, missing "
+            "dtypes, or unverified generated handlers."
+        ),
+    )
+    parser.add_argument(
         "--graph-path",
         required=True,
         help="Path to a PyTorch graph file (prefer pytorch_graph.yaml).",
@@ -116,6 +124,7 @@ def main() -> None:
         enable_agent=args.enable_llm_agent,
         api_key=args.api_key,
         cache_dir=args.cache_dir,
+        strict=args.official,
     )
     results = converter.convert(
         graph_path,
@@ -158,5 +167,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

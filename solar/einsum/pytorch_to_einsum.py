@@ -47,7 +47,7 @@ import string
 import copy
 from pathlib import Path
 from collections import Counter, defaultdict, deque
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import networkx as nx
 import yaml
@@ -66,60 +66,165 @@ from solar.einsum.einsum_rank_renamer import EinsumRankRenamer
 from solar.einsum.einsum_to_taco import add_taco_expressions
 from solar.einsum.ops.base import EinsumOp, EinsumOperand
 from solar.einsum.ops.registry import get_global_registry
-
+from solar.einsum.semantics import annotate_semantics, validate_semantic_graph
 
 PathLike = Union[str, Path]
 
+
+class ConversionError(ValueError):
+    """The PyTorch graph cannot be converted without approximation."""
+
+
 # Operation categories for einsum supportability classification
-_REAL_EINSUM_OPS = frozenset({
-    "matmul", "mm", "bmm", "linear",
-    "conv1d", "conv2d", "conv3d",
-    "convtranspose1d", "convtranspose2d", "convtranspose3d",
-    "conv_transpose1d", "conv_transpose2d", "conv_transpose3d",
-    "scaled_dot_product_attention", "attention", "sdpa",
-    "einsum",
-})
+_REAL_EINSUM_OPS = frozenset(
+    {
+        "matmul",
+        "mm",
+        "bmm",
+        "linear",
+        "conv1d",
+        "conv2d",
+        "conv3d",
+        "convtranspose1d",
+        "convtranspose2d",
+        "convtranspose3d",
+        "conv_transpose1d",
+        "conv_transpose2d",
+        "conv_transpose3d",
+        "scaled_dot_product_attention",
+        "attention",
+        "sdpa",
+        "einsum",
+    }
+)
 
-_BINARY_ELEMENTWISE_OPS = frozenset({
-    "add", "sub", "mul", "div", "pow",
-    "add_", "sub_", "mul_", "div_",
-    "__add__", "__sub__", "__mul__", "__truediv__",
-    "__radd__", "__rsub__", "__rmul__", "__rtruediv__",
-})
+_BINARY_ELEMENTWISE_OPS = frozenset(
+    {
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "pow",
+        "add_",
+        "sub_",
+        "mul_",
+        "div_",
+        "__add__",
+        "__sub__",
+        "__mul__",
+        "__truediv__",
+        "__radd__",
+        "__rsub__",
+        "__rmul__",
+        "__rtruediv__",
+    }
+)
 
-_UNARY_ELEMENTWISE_OPS = frozenset({
-    "relu", "sigmoid", "tanh", "gelu", "selu", "elu", "mish",
-    "softmax", "log_softmax", "softplus", "hardswish", "hardsigmoid",
-    "abs", "neg", "exp", "log", "sqrt", "rsqrt", "sin", "cos",
-    "clamp", "clamp_", "relu_",
-    "dropout", "dropout_",
-})
+_UNARY_ELEMENTWISE_OPS = frozenset(
+    {
+        "relu",
+        "sigmoid",
+        "tanh",
+        "gelu",
+        "selu",
+        "elu",
+        "mish",
+        "softmax",
+        "log_softmax",
+        "softplus",
+        "hardswish",
+        "hardsigmoid",
+        "abs",
+        "neg",
+        "exp",
+        "log",
+        "sqrt",
+        "rsqrt",
+        "sin",
+        "cos",
+        "clamp",
+        "clamp_",
+        "relu_",
+        "dropout",
+        "dropout_",
+    }
+)
 
-_REDUCTION_OPS = frozenset({
-    "sum", "mean", "prod", "max", "min", "amax", "amin",
-    "argmax", "argmin", "logsumexp", "norm",
-})
+_REDUCTION_OPS = frozenset(
+    {
+        "sum",
+        "mean",
+        "prod",
+        "max",
+        "min",
+        "amax",
+        "amin",
+        "argmax",
+        "argmin",
+        "logsumexp",
+        "norm",
+    }
+)
 
-_NORM_OPS = frozenset({
-    "batch_norm", "batchnorm", "batchnorm1d", "batchnorm2d", "batchnorm3d",
-    "layer_norm", "layernorm", "group_norm", "groupnorm",
-    "instance_norm", "instancenorm", "normalize",
-})
+_NORM_OPS = frozenset(
+    {
+        "batch_norm",
+        "batchnorm",
+        "batchnorm1d",
+        "batchnorm2d",
+        "batchnorm3d",
+        "layer_norm",
+        "layernorm",
+        "group_norm",
+        "groupnorm",
+        "instance_norm",
+        "instancenorm",
+        "normalize",
+    }
+)
 
-_POOLING_OPS = frozenset({
-    "max_pool1d", "max_pool2d", "max_pool3d",
-    "avg_pool1d", "avg_pool2d", "avg_pool3d",
-    "adaptive_max_pool1d", "adaptive_max_pool2d", "adaptive_max_pool3d",
-    "adaptive_avg_pool1d", "adaptive_avg_pool2d", "adaptive_avg_pool3d",
-})
+_POOLING_OPS = frozenset(
+    {
+        "max_pool1d",
+        "max_pool2d",
+        "max_pool3d",
+        "avg_pool1d",
+        "avg_pool2d",
+        "avg_pool3d",
+        "adaptive_max_pool1d",
+        "adaptive_max_pool2d",
+        "adaptive_max_pool3d",
+        "adaptive_avg_pool1d",
+        "adaptive_avg_pool2d",
+        "adaptive_avg_pool3d",
+    }
+)
 
-_SHAPE_OPS = frozenset({
-    "view", "reshape", "flatten", "unflatten",
-    "squeeze", "unsqueeze", "expand", "repeat",
-    "transpose", "permute", "t", "contiguous",
-    "cat", "concat", "stack", "split", "chunk",
-    "__getitem__", "getitem", "select", "index_select",
-})
+_SHAPE_OPS = frozenset(
+    {
+        "view",
+        "reshape",
+        "flatten",
+        "unflatten",
+        "squeeze",
+        "unsqueeze",
+        "expand",
+        "repeat",
+        "transpose",
+        "permute",
+        "t",
+        "contiguous",
+        "cat",
+        "concat",
+        "stack",
+        "split",
+        "chunk",
+        "__getitem__",
+        "getitem",
+        "select",
+        "index_select",
+    }
+)
 
 _MATRIX_OPS = frozenset({"diag", "diagonal", "tril", "triu"})
 
@@ -127,27 +232,60 @@ _EMBEDDING_OPS = frozenset({"embedding"})
 
 _RNN_OPS = frozenset({"gru", "lstm", "rnn"})
 
-_TRIVIAL_OPS = frozenset({
-    "clone", "detach", "copy_", "to", "type", "float", "half",
-    "hidden-tensor", "output-tensor", "auxiliary-tensor",
-    "roll", "pad", "unfold", "fold",
-})
-
-_ATTENTION_OPS = frozenset({
-    "multi_head_attention_forward", "multihead_attention",
-    "flex_attention",
-})
-
-_ALL_SUPPORTABLE_OPS = (
-    _REAL_EINSUM_OPS | _BINARY_ELEMENTWISE_OPS | _UNARY_ELEMENTWISE_OPS |
-    _REDUCTION_OPS | _NORM_OPS | _POOLING_OPS | _SHAPE_OPS |
-    _MATRIX_OPS | _EMBEDDING_OPS | _RNN_OPS | _TRIVIAL_OPS | _ATTENTION_OPS
+_TRIVIAL_OPS = frozenset(
+    {
+        "clone",
+        "detach",
+        "copy_",
+        "to",
+        "type",
+        "float",
+        "half",
+        "hidden-tensor",
+        "output-tensor",
+        "auxiliary-tensor",
+        "roll",
+        "pad",
+        "unfold",
+        "fold",
+    }
 )
 
-_UNSUPPORTABLE_OPS = frozenset({
-    "if", "while", "for", "return", "raise",
-    "print", "assert", "pass",
-})
+_ATTENTION_OPS = frozenset(
+    {
+        "multi_head_attention_forward",
+        "multihead_attention",
+        "flex_attention",
+    }
+)
+
+_ALL_SUPPORTABLE_OPS = (
+    _REAL_EINSUM_OPS
+    | _BINARY_ELEMENTWISE_OPS
+    | _UNARY_ELEMENTWISE_OPS
+    | _REDUCTION_OPS
+    | _NORM_OPS
+    | _POOLING_OPS
+    | _SHAPE_OPS
+    | _MATRIX_OPS
+    | _EMBEDDING_OPS
+    | _RNN_OPS
+    | _TRIVIAL_OPS
+    | _ATTENTION_OPS
+)
+
+_UNSUPPORTABLE_OPS = frozenset(
+    {
+        "if",
+        "while",
+        "for",
+        "return",
+        "raise",
+        "print",
+        "assert",
+        "pass",
+    }
+)
 
 
 def _product(shape: List[int]) -> int:
@@ -184,6 +322,7 @@ class PyTorchToEinsum:
         enable_agent: bool = False,
         api_key: Optional[str] = None,
         cache_dir: str = "./solar_handlers_cache",
+        strict: bool = False,
     ) -> None:
         """Initialize the converter.
 
@@ -197,6 +336,7 @@ class PyTorchToEinsum:
         self._enable_agent = enable_agent
         self._api_key = api_key
         self._cache_dir = cache_dir
+        self._strict = strict
         self._einsum_analyzer = EinsumAnalyzer(debug=debug)
 
     @property
@@ -383,7 +523,9 @@ class PyTorchToEinsum:
                 shapes.append(())
                 continue
             try:
-                shapes.append(tuple(int(d.strip()) for d in body.split(",") if d.strip()))
+                shapes.append(
+                    tuple(int(d.strip()) for d in body.split(",") if d.strip())
+                )
             except ValueError:
                 shapes.append(None)
         return shapes
@@ -393,20 +535,61 @@ class PyTorchToEinsum:
     # input (no real compute, no precision change). Used by the dtype repair
     # in ``_repair_torchview_quirks``.
     _SHAPE_OP_TYPES_FOR_DTYPE: "set[str]" = {
-        "view", "reshape", "flatten", "unflatten", "squeeze", "unsqueeze",
-        "expand", "repeat", "transpose", "permute", "t", "contiguous",
-        "cat", "concat", "stack", "split", "chunk",
-        "__getitem__", "getitem", "select", "index_select",
-        "narrow", "slice", "movedim", "swapaxes", "swapdims",
-        "view_as", "reshape_as", "broadcast_to", "expand_as",
-        "detach", "alias", "ravel", "unbind", "diagonal",
+        "view",
+        "reshape",
+        "flatten",
+        "unflatten",
+        "squeeze",
+        "unsqueeze",
+        "expand",
+        "repeat",
+        "transpose",
+        "permute",
+        "t",
+        "contiguous",
+        "cat",
+        "concat",
+        "stack",
+        "split",
+        "chunk",
+        "__getitem__",
+        "getitem",
+        "select",
+        "index_select",
+        "narrow",
+        "slice",
+        "movedim",
+        "swapaxes",
+        "swapdims",
+        "view_as",
+        "reshape_as",
+        "broadcast_to",
+        "expand_as",
+        "detach",
+        "alias",
+        "ravel",
+        "unbind",
+        "diagonal",
     }
     _DTYPE_BITS: "dict[str, int]" = {
-        "float64": 64, "double": 64, "complex128": 128, "complex64": 64,
-        "float32": 32, "tf32": 32,
-        "bfloat16": 16, "float16": 16, "half": 16,
-        "int64": 64, "long": 64, "int32": 32, "int": 32,
-        "int16": 16, "short": 16, "int8": 8, "uint8": 8, "byte": 8,
+        "float64": 64,
+        "double": 64,
+        "complex128": 128,
+        "complex64": 64,
+        "float32": 32,
+        "tf32": 32,
+        "bfloat16": 16,
+        "float16": 16,
+        "half": 16,
+        "int64": 64,
+        "long": 64,
+        "int32": 32,
+        "int": 32,
+        "int16": 16,
+        "short": 16,
+        "int8": 8,
+        "uint8": 8,
+        "byte": 8,
         "bool": 1,
     }
 
@@ -414,9 +597,7 @@ class PyTorchToEinsum:
     def _bits_of_dtype(cls, dtype_str: Optional[str]) -> int:
         if not dtype_str:
             return 32
-        return cls._DTYPE_BITS.get(
-            str(dtype_str).replace("torch.", "").lower(), 32
-        )
+        return cls._DTYPE_BITS.get(str(dtype_str).replace("torch.", "").lower(), 32)
 
     def _repair_torchview_quirks(
         self,
@@ -473,8 +654,12 @@ class PyTorchToEinsum:
         # fall back to the producer's ``output_shapes[0]`` when the tensor
         # itself has no shape recorded.
         orphans_by_key: Dict[Tuple[Tuple[int, ...], str], List[str]] = defaultdict(list)
-        dangling_by_key: Dict[Tuple[Tuple[int, ...], str], List[Tuple[str, str]]] = defaultdict(list)
-        hidden_dangling_by_shape: Dict[Tuple[int, ...], List[Tuple[str, str, str]]] = defaultdict(list)
+        dangling_by_key: Dict[Tuple[Tuple[int, ...], str], List[Tuple[str, str]]] = (
+            defaultdict(list)
+        )
+        hidden_dangling_by_shape: Dict[Tuple[int, ...], List[Tuple[str, str, str]]] = (
+            defaultdict(list)
+        )
         for tensor_id in tensor_ids:
             tdata = layers.get(tensor_id) or {}
             conns = tdata.get("connections") or {}
@@ -502,12 +687,18 @@ class PyTorchToEinsum:
         consumed: Set[Tuple[str, str]] = set()
         for op_id in op_ids:
             odata = layers.get(op_id) or {}
-            arg_shapes = [s for s in self._tensor_arg_shapes_from_raw(
-                odata.get("module_args") or {}) if s is not None]
+            arg_shapes = [
+                s
+                for s in self._tensor_arg_shapes_from_raw(
+                    odata.get("module_args") or {}
+                )
+                if s is not None
+            ]
             if not arg_shapes:
                 continue
-            recorded = [tuple(s) for s in (odata.get("input_shapes") or [])
-                        if s is not None]
+            recorded = [
+                tuple(s) for s in (odata.get("input_shapes") or []) if s is not None
+            ]
             missing = Counter(arg_shapes) - Counter(recorded)
             if not missing:
                 continue
@@ -515,9 +706,11 @@ class PyTorchToEinsum:
             default_dt = str(in_dtypes[0]) if in_dtypes else "torch.float32"
             for sh, cnt in missing.items():
                 for _ in range(cnt):
-                    candidates = [(t, p, d) for (t, p, d)
-                                  in hidden_dangling_by_shape.get(sh, [])
-                                  if (t, p) not in consumed]
+                    candidates = [
+                        (t, p, d)
+                        for (t, p, d) in hidden_dangling_by_shape.get(sh, [])
+                        if (t, p) not in consumed
+                    ]
                     if len(candidates) != 1:
                         continue  # ambiguous or none
                     tensor_id, producer_op, dt = candidates[0]
@@ -537,8 +730,11 @@ class PyTorchToEinsum:
 
         # --- (B) Split tensor-node pairs ----------------------------------
         for key, orphan_ids in orphans_by_key.items():
-            de_list = [(t, p) for (t, p) in dangling_by_key.get(key, [])
-                       if (t, p) not in consumed]
+            de_list = [
+                (t, p)
+                for (t, p) in dangling_by_key.get(key, [])
+                if (t, p) not in consumed
+            ]
             if len(orphan_ids) != 1 or len(de_list) != 1:
                 continue
             orphan_id = orphan_ids[0]
@@ -564,8 +760,7 @@ class PyTorchToEinsum:
         for layer_id, ldata in layers.items():
             if layer_id in op_id_set:
                 continue
-            outd = (ldata.get("output_dtypes") or ldata.get("input_dtypes")
-                    or [])
+            outd = ldata.get("output_dtypes") or ldata.get("input_dtypes") or []
             if outd:
                 corrected_dtype[layer_id] = outd[0]
 
@@ -581,8 +776,11 @@ class PyTorchToEinsum:
                 odata["input_dtypes"] = in_dtypes
             layer_type = (odata.get("type") or "").lower()
             if layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
-                widest = (in_dtypes[0] if in_dtypes
-                          else (odata.get("output_dtypes") or ["torch.float32"])[0])
+                widest = (
+                    in_dtypes[0]
+                    if in_dtypes
+                    else (odata.get("output_dtypes") or ["torch.float32"])[0]
+                )
             elif in_dtypes:
                 widest = max(in_dtypes, key=self._bits_of_dtype)
             else:
@@ -627,9 +825,7 @@ class PyTorchToEinsum:
                     if shapes[i] is None:
                         continue
                     key = tuple(shapes[i])
-                    shapes_by_name[names[i]][key].append(
-                        f"{layer_name}.{side}[{i}]"
-                    )
+                    shapes_by_name[names[i]][key].append(f"{layer_name}.{side}[{i}]")
         conflicts: List[str] = []
         for name, by_shape in shapes_by_name.items():
             if len(by_shape) > 1:
@@ -689,7 +885,9 @@ class PyTorchToEinsum:
             self._copy_input_graph(src, out_dir, pytorch_graph)
 
         # Build operation-only graph (collapse tensor nodes)
-        op_graph, start_nodes_info, param_nodes_info = self._build_op_graph(pytorch_graph)
+        op_graph, start_nodes_info, param_nodes_info = self._build_op_graph(
+            pytorch_graph
+        )
 
         # Optional complex operation expansion
         if expand_complex_ops:
@@ -699,6 +897,12 @@ class PyTorchToEinsum:
         einsum_graph = self._build_einsum_graph(
             pytorch_graph, op_graph, start_nodes_info, param_nodes_info
         )
+
+        einsum_graph = annotate_semantics(einsum_graph, strict=self._strict)
+
+        if self._strict:
+            self._validate_exact_graph(einsum_graph)
+            validate_semantic_graph(einsum_graph)
 
         # Add TACO expressions to all layers
         einsum_graph = add_taco_expressions(einsum_graph)
@@ -715,10 +919,11 @@ class PyTorchToEinsum:
         out_path = out_dir / "einsum_graph.yaml"
         with open(out_path, "w") as f:
             yaml.dump(
-                einsum_graph, f,
+                einsum_graph,
+                f,
                 Dumper=NoAliasDumper,
                 sort_keys=False,
-                default_flow_style=False
+                default_flow_style=False,
             )
 
         if self._debug:
@@ -732,9 +937,12 @@ class PyTorchToEinsum:
                 print(f"✅ Wrote renamed einsum graph: {renamed_path}")
         else:
             import shutil
+
             shutil.copy2(out_path, renamed_path)
             if self._debug:
-                print(f"✅ Copied einsum graph as renamed (rename disabled): {renamed_path}")
+                print(
+                    f"✅ Copied einsum graph as renamed (rename disabled): {renamed_path}"
+                )
 
         # Principled AccelForge graph emission via one union-find pass
         # over the stage-2 einsum graph. Replaces the historical
@@ -749,11 +957,7 @@ class PyTorchToEinsum:
         af_to_write = {k: v for k, v in af_graph.items() if not k.startswith("_")}
         out_path = out_dir / "af_einsum_graph.yaml"
         with open(out_path, "w") as f:
-            yaml.dump(
-                af_to_write, f,
-                sort_keys=False,
-                default_flow_style=False
-            )
+            yaml.dump(af_to_write, f, sort_keys=False, default_flow_style=False)
 
         if self._debug:
             print(f"✅ Wrote AccelForge graph: {out_path}")
@@ -781,10 +985,11 @@ class PyTorchToEinsum:
             elif not dst.exists():
                 with open(dst, "w") as f:
                     yaml.dump(
-                        pytorch_graph, f,
+                        pytorch_graph,
+                        f,
                         Dumper=NoAliasDumper,
                         sort_keys=False,
-                        default_flow_style=False
+                        default_flow_style=False,
                     )
         except Exception:
             if self._debug:
@@ -882,14 +1087,10 @@ class PyTorchToEinsum:
             graph.add_node(op_id, **(layers.get(op_id) or {}))
 
         # Collect auxiliary tensor info for start nodes (model inputs only)
-        start_nodes_info = self._collect_start_node_info(
-            layers, auxiliary_ids, op_ids
-        )
+        start_nodes_info = self._collect_start_node_info(layers, auxiliary_ids, op_ids)
 
         # Collect parameter tensor info separately (model weights)
-        param_nodes_info = self._collect_start_node_info(
-            layers, parameter_ids, op_ids
-        )
+        param_nodes_info = self._collect_start_node_info(layers, parameter_ids, op_ids)
 
         for tensor_id in tensor_ids:
             tensor_data = layers.get(tensor_id) or {}
@@ -972,13 +1173,15 @@ class PyTorchToEinsum:
 
             output_dtypes = aux_data.get("output_dtypes") or []
 
-            start_nodes_info.append({
-                "original_id": aux_id,
-                "index": idx,
-                "output_shapes": output_shapes,
-                "output_dtypes": output_dtypes,
-                "consumers": valid_consumers,
-            })
+            start_nodes_info.append(
+                {
+                    "original_id": aux_id,
+                    "index": idx,
+                    "output_shapes": output_shapes,
+                    "output_dtypes": output_dtypes,
+                    "consumers": valid_consumers,
+                }
+            )
 
         return start_nodes_info
 
@@ -995,10 +1198,44 @@ class PyTorchToEinsum:
                 enable_agent=self._enable_agent,
                 api_key=self._api_key,
                 cache_dir=self._cache_dir,
+                fail_closed=self._strict,
             )
             return expander.expand(graph)
-        except Exception:
+        except Exception as exc:
+            if self._strict:
+                raise ConversionError(
+                    f"complex-operation expansion failed: {exc}"
+                ) from exc
             return graph
+
+    @staticmethod
+    def _validate_exact_graph(einsum_graph: Dict[str, Any]) -> None:
+        """Reject every incomplete or approximate layer in official mode."""
+        failures: List[str] = []
+        for layer_id, layer in (einsum_graph.get("layers") or {}).items():
+            if str(layer.get("type", "")).lower() == "start":
+                dtypes = (layer.get("tensor_dtypes") or {}).get("outputs") or []
+                shapes = (layer.get("tensor_shapes") or {}).get("outputs") or []
+                if len(dtypes) != len(shapes):
+                    failures.append(f"{layer_id}: missing explicit input dtype")
+                continue
+            if layer.get("is_einsum_supportable") is not True:
+                failures.append(f"{layer_id}: unsupported operation")
+            semantic = layer.get("semantic_op") or {}
+            if semantic.get("kind") == "einsum" and not layer.get("einsum_equation"):
+                failures.append(f"{layer_id}: empty einsum equation")
+            dtypes = layer.get("tensor_dtypes") or {}
+            shapes = layer.get("tensor_shapes") or {}
+            for side in ("inputs", "outputs"):
+                if len(dtypes.get(side) or []) != len(shapes.get(side) or []):
+                    failures.append(
+                        f"{layer_id}: missing explicit {side} dtype metadata"
+                    )
+        if failures:
+            raise ConversionError(
+                "strict conversion refused an untrusted graph:\n- "
+                + "\n- ".join(failures)
+            )
 
     def _build_einsum_graph(
         self,
@@ -1021,7 +1258,7 @@ class PyTorchToEinsum:
         all_source_nodes_info = list(start_nodes_info) + list(param_nodes_info or [])
 
         # Map parameter node original IDs so _convert_operation can find them
-        for info in (param_nodes_info or []):
+        for info in param_nodes_info or []:
             original_id = info["original_id"]
             start_node_id_map[original_id] = original_id
 
@@ -1047,7 +1284,11 @@ class PyTorchToEinsum:
             # Check if this is a linear layer with bias that should be split
             if self._should_split_linear_with_bias(node_data):
                 matmul_layer, add_layer = self._split_linear_with_bias(
-                    node_id, node_data, op_graph, all_source_nodes_info, start_node_id_map
+                    node_id,
+                    node_data,
+                    op_graph,
+                    all_source_nodes_info,
+                    start_node_id_map,
                 )
                 result["layers"][node_id] = matmul_layer
                 add_node_id = f"{node_id}.bias_add"
@@ -1057,8 +1298,14 @@ class PyTorchToEinsum:
 
             # Check if this is a group-wise conv that needs reshape expansion
             elif self._should_expand_groupwise_conv(node_data):
-                subgraph_layers, final_node_id, input_mapping = self._expand_groupwise_conv(
-                    node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+                subgraph_layers, final_node_id, input_mapping = (
+                    self._expand_groupwise_conv(
+                        node_id,
+                        node_data,
+                        op_graph,
+                        start_nodes_info,
+                        start_node_id_map,
+                    )
                 )
                 for sub_id, sub_layer in subgraph_layers.items():
                     result["layers"][sub_id] = sub_layer
@@ -1189,7 +1436,7 @@ class PyTorchToEinsum:
             raise ValueError(f"SDPA requires 3 inputs (Q, K, V). Got: {input_shapes}")
 
         query_shape = list(input_shapes[0])  # [B, H, Q, D]
-        key_shape = list(input_shapes[1])    # [B, H, K, D]
+        key_shape = list(input_shapes[1])  # [B, H, K, D]
         value_shape = list(input_shapes[2])  # [B, H, K, V]
         output_shape = list(output_shapes[0]) if output_shapes else None
 
@@ -1198,7 +1445,7 @@ class PyTorchToEinsum:
         H = query_shape[1]  # heads
         Q_len = query_shape[2]  # query sequence length
         D = query_shape[3]  # embedding dim
-        K_len = key_shape[2]    # key sequence length
+        K_len = key_shape[2]  # key sequence length
         V_dim = value_shape[3]  # value embedding dim
 
         # Intermediate shapes
@@ -1245,8 +1492,16 @@ class PyTorchToEinsum:
             "is_einsum_supportable": True,
             "tensor_names": {
                 "inputs": [
-                    f"{input_connections[0]}.Output" if input_connections else f"{node_id}.Query",
-                    f"{input_connections[1]}.Output" if len(input_connections) > 1 else f"{node_id}.Key",
+                    (
+                        f"{input_connections[0]}.Output"
+                        if input_connections
+                        else f"{node_id}.Query"
+                    ),
+                    (
+                        f"{input_connections[1]}.Output"
+                        if len(input_connections) > 1
+                        else f"{node_id}.Key"
+                    ),
                 ],
                 "outputs": [f"{qk_node_id}.Output"],
             },
@@ -1261,7 +1516,7 @@ class PyTorchToEinsum:
             # Operands drive the AF graph builder; without them the
             # layer is silently dropped (cf. commit 8162f29 for linear).
             "operands": {
-                "Input":  ["B", "H", "Q", "D"],
+                "Input": ["B", "H", "Q", "D"],
                 "Weight": ["B", "H", "K", "D"],
                 "Output": ["B", "H", "Q", "K"],
             },
@@ -1270,7 +1525,11 @@ class PyTorchToEinsum:
                 "outputs": [act_dtype],
             },
             "connections": {
-                "inputs": input_connections[:2] if len(input_connections) >= 2 else input_connections,
+                "inputs": (
+                    input_connections[:2]
+                    if len(input_connections) >= 2
+                    else input_connections
+                ),
                 "outputs": [scale_node_id],
             },
         }
@@ -1296,7 +1555,7 @@ class PyTorchToEinsum:
                 "outputs": [scores_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
+                "Input": ["B", "H", "Q", "K"],
                 "Output": ["B", "H", "Q", "K"],
             },
             "tensor_dtypes": {
@@ -1333,7 +1592,7 @@ class PyTorchToEinsum:
                 "outputs": [scores_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
+                "Input": ["B", "H", "Q", "K"],
                 "Output": ["B", "H", "Q", "K"],
             },
             "tensor_dtypes": {
@@ -1361,7 +1620,11 @@ class PyTorchToEinsum:
             "tensor_names": {
                 "inputs": [
                     f"{softmax_node_id}.Output",
-                    f"{input_connections[2]}.Output" if len(input_connections) > 2 else f"{node_id}.Value",
+                    (
+                        f"{input_connections[2]}.Output"
+                        if len(input_connections) > 2
+                        else f"{node_id}.Value"
+                    ),
                 ],
                 "outputs": [f"{av_node_id}.Output"],
             },
@@ -1374,7 +1637,7 @@ class PyTorchToEinsum:
                 "outputs": [final_output_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
+                "Input": ["B", "H", "Q", "K"],
                 "Weight": ["B", "H", "K", "V"],
                 "Output": ["B", "H", "Q", "V"],
             },
@@ -1383,7 +1646,8 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "connections": {
-                "inputs": [softmax_node_id] + (input_connections[2:3] if len(input_connections) > 2 else []),
+                "inputs": [softmax_node_id]
+                + (input_connections[2:3] if len(input_connections) > 2 else []),
                 "outputs": output_connections,
             },
         }
@@ -1419,7 +1683,11 @@ class PyTorchToEinsum:
         out_channels = int(
             module_args.get(
                 "out_channels",
-                output_shapes[0][1] if output_shapes and len(output_shapes[0]) > 1 else 0,
+                (
+                    output_shapes[0][1]
+                    if output_shapes and len(output_shapes[0]) > 1
+                    else 0
+                ),
             )
         )
 
@@ -1493,7 +1761,9 @@ class PyTorchToEinsum:
             }
             fallback_conv_equation = "BGI(P+R),GOIR->BGOP"
 
-        raw_input_connections = list((node_data.get("connections") or {}).get("inputs") or [])
+        raw_input_connections = list(
+            (node_data.get("connections") or {}).get("inputs") or []
+        )
         if not raw_input_connections:
             raw_input_connections = list(op_graph.predecessors(node_id))
         for info in start_nodes_info:
@@ -1514,7 +1784,11 @@ class PyTorchToEinsum:
         input_types_raw = list(node_data.get("input_types") or [])
         for idx, conn_id in enumerate(raw_input_connections):
             mapped = start_node_id_map.get(conn_id, conn_id)
-            itype = str(input_types_raw[idx]).lower() if idx < len(input_types_raw) else "input"
+            itype = (
+                str(input_types_raw[idx]).lower()
+                if idx < len(input_types_raw)
+                else "input"
+            )
             if itype == "weight":
                 input_connections.append(mapped)
                 continue
@@ -1574,7 +1848,9 @@ class PyTorchToEinsum:
         activation_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
         weight_dtype = input_dtypes[1] if len(input_dtypes) > 1 else activation_dtype
         output_dtype = output_dtypes[0] if output_dtypes else activation_dtype
-        weight_tensor_name = f"{weight_conn}.Output" if weight_conn else f"{conv_id}.Weight"
+        weight_tensor_name = (
+            f"{weight_conn}.Output" if weight_conn else f"{conv_id}.Weight"
+        )
 
         reshape_in_layer = {
             "type": "view",
@@ -1584,7 +1860,13 @@ class PyTorchToEinsum:
             "is_real_einsum": False,
             "is_einsum_supportable": True,
             "tensor_names": {
-                "inputs": [f"{activation_conn}.Output" if activation_conn else f"{reshape_in_id}.Input"],
+                "inputs": [
+                    (
+                        f"{activation_conn}.Output"
+                        if activation_conn
+                        else f"{reshape_in_id}.Input"
+                    )
+                ],
                 "outputs": [f"{reshape_in_id}.Output"],
             },
             "tensor_types": {
@@ -1624,7 +1906,9 @@ class PyTorchToEinsum:
                 dilation=dilation,
             )
             conv_equation = einsum_op.equation
-            conv_operands = {operand.name: operand.dims for operand in einsum_op.operands}
+            conv_operands = {
+                operand.name: operand.dims for operand in einsum_op.operands
+            }
         except Exception:
             conv_equation = fallback_conv_equation
             if is_2d:
@@ -1665,7 +1949,9 @@ class PyTorchToEinsum:
             },
             "operands": conv_operands,
             "connections": {
-                "inputs": [reshape_in_id, weight_conn] if weight_conn else [reshape_in_id],
+                "inputs": (
+                    [reshape_in_id, weight_conn] if weight_conn else [reshape_in_id]
+                ),
                 "outputs": [reshape_out_id],
             },
         }
@@ -1751,8 +2037,11 @@ class PyTorchToEinsum:
         output_dtypes = node_data.get("output_dtypes") or []
         act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
         weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if t == "weight" and i < len(input_dtypes)),
+            (
+                input_dtypes[i]
+                for i, t in enumerate(input_types)
+                if t == "weight" and i < len(input_dtypes)
+            ),
             act_dtype,
         )
         out_dtype = output_dtypes[0] if output_dtypes else act_dtype
@@ -1812,7 +2101,8 @@ class PyTorchToEinsum:
             input_mapping[2] = in_proj_id
 
         act_input_name = (
-            f"{input_connections[0]}.Output" if input_connections
+            f"{input_connections[0]}.Output"
+            if input_connections
             else f"{node_id}.Input"
         )
         in_proj_w_name = f"{node_id}.in_proj.Weight"
@@ -1830,7 +2120,11 @@ class PyTorchToEinsum:
                 "reduction_op": "add",
                 "is_real_einsum": True,
                 "is_einsum_supportable": True,
-                "operands": {"Input": ["M", "K"], "Weight": ["N", "K"], "Output": ["M", "N"]},
+                "operands": {
+                    "Input": ["M", "K"],
+                    "Weight": ["N", "K"],
+                    "Output": ["M", "N"],
+                },
                 "tensor_names": {
                     "inputs": [act_input_name, in_proj_w_name],
                     "outputs": [f"{in_proj_id}.Output"],
@@ -1861,10 +2155,16 @@ class PyTorchToEinsum:
             "reduction_op": "add",
             "is_real_einsum": True,
             "is_einsum_supportable": True,
-            "operands": {"Input": ["B", "H", "Q", "D"], "Input_1": ["B", "H", "D", "K"], "Output": ["B", "H", "Q", "K"]},
+            "operands": {
+                "Input": ["B", "H", "Q", "D"],
+                "Input_1": ["B", "H", "D", "K"],
+                "Output": ["B", "H", "Q", "K"],
+            },
             "tensor_names": {
-                "inputs": [f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name,
-                           f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name],
+                "inputs": [
+                    f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name,
+                    f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name,
+                ],
                 "outputs": [f"{qk_id}.Output"],
             },
             "tensor_types": {
@@ -1955,10 +2255,16 @@ class PyTorchToEinsum:
             "reduction_op": "add",
             "is_real_einsum": True,
             "is_einsum_supportable": True,
-            "operands": {"Input": ["B", "H", "Q", "K"], "Input_1": ["B", "H", "K", "V"], "Output": ["B", "H", "Q", "V"]},
+            "operands": {
+                "Input": ["B", "H", "Q", "K"],
+                "Input_1": ["B", "H", "K", "V"],
+                "Output": ["B", "H", "Q", "V"],
+            },
             "tensor_names": {
-                "inputs": [f"{softmax_id}.Output",
-                           f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name],
+                "inputs": [
+                    f"{softmax_id}.Output",
+                    f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name,
+                ],
                 "outputs": [f"{av_id}.Output"],
             },
             "tensor_types": {
@@ -1991,7 +2297,11 @@ class PyTorchToEinsum:
                 "reduction_op": "add",
                 "is_real_einsum": True,
                 "is_einsum_supportable": True,
-                "operands": {"Input": ["M", "K"], "Weight": ["N", "K"], "Output": ["M", "N"]},
+                "operands": {
+                    "Input": ["M", "K"],
+                    "Weight": ["N", "K"],
+                    "Output": ["M", "N"],
+                },
                 "tensor_names": {
                     "inputs": [f"{av_id}.Output", out_proj_w_name],
                     "outputs": [f"{out_proj_id}.Output"],
@@ -2039,8 +2349,11 @@ class PyTorchToEinsum:
         output_dtypes = node_data.get("output_dtypes") or []
         act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
         weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if t == "weight" and i < len(input_dtypes)),
+            (
+                input_dtypes[i]
+                for i, t in enumerate(input_types)
+                if t == "weight" and i < len(input_dtypes)
+            ),
             act_dtype,
         )
         out_dtype = output_dtypes[0] if output_dtypes else act_dtype
@@ -2084,11 +2397,13 @@ class PyTorchToEinsum:
             input_mapping[1] = hh_id
 
         act_input_name = (
-            f"{input_connections[0]}.Output" if input_connections
+            f"{input_connections[0]}.Output"
+            if input_connections
             else f"{node_id}.Input"
         )
         hidden_input_name = (
-            f"{input_connections[1]}.Output" if len(input_connections) > 1
+            f"{input_connections[1]}.Output"
+            if len(input_connections) > 1
             else f"{node_id}.Hidden"
         )
 
@@ -2124,7 +2439,7 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "operands": {
-                "Input":  ["S", "B", "I"],
+                "Input": ["S", "B", "I"],
                 "Weight": ["G", "I"],
                 "Output": ["S", "B", "G"],
             },
@@ -2164,7 +2479,7 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "operands": {
-                "Input":  ["S", "B", "H"],
+                "Input": ["S", "B", "H"],
                 "Weight": ["G", "H"],
                 "Output": ["S", "B", "G"],
             },
@@ -2200,7 +2515,7 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "operands": {
-                "Input":  ["S", "B", "H"],
+                "Input": ["S", "B", "H"],
                 "Output": ["S", "B", "H"],
             },
             "connections": {
@@ -2234,8 +2549,11 @@ class PyTorchToEinsum:
         output_dtypes = node_data.get("output_dtypes") or []
         act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
         weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if t == "weight" and i < len(input_dtypes)),
+            (
+                input_dtypes[i]
+                for i, t in enumerate(input_types)
+                if t == "weight" and i < len(input_dtypes)
+            ),
             act_dtype,
         )
         out_dtype = output_dtypes[0] if output_dtypes else act_dtype
@@ -2278,11 +2596,13 @@ class PyTorchToEinsum:
             input_mapping[1] = hh_id
 
         act_input_name = (
-            f"{input_connections[0]}.Output" if input_connections
+            f"{input_connections[0]}.Output"
+            if input_connections
             else f"{node_id}.Input"
         )
         hidden_input_name = (
-            f"{input_connections[1]}.Output" if len(input_connections) > 1
+            f"{input_connections[1]}.Output"
+            if len(input_connections) > 1
             else f"{node_id}.Hidden"
         )
 
@@ -2316,7 +2636,7 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "operands": {
-                "Input":  ["S", "B", "I"],
+                "Input": ["S", "B", "I"],
                 "Weight": ["G", "I"],
                 "Output": ["S", "B", "G"],
             },
@@ -2356,7 +2676,7 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "operands": {
-                "Input":  ["S", "B", "H"],
+                "Input": ["S", "B", "H"],
                 "Weight": ["G", "H"],
                 "Output": ["S", "B", "G"],
             },
@@ -2392,7 +2712,7 @@ class PyTorchToEinsum:
                 "outputs": [out_dtype],
             },
             "operands": {
-                "Input":  ["S", "B", "H"],
+                "Input": ["S", "B", "H"],
                 "Output": ["S", "B", "H"],
             },
             "connections": {
@@ -2424,10 +2744,16 @@ class PyTorchToEinsum:
             weight_indices = [i for i, t in enumerate(input_types) if t == "weight"]
             input_indices = [i for i, t in enumerate(input_types) if t == "input"]
             has_rank1_weight = any(
-                i < len(input_shapes) and isinstance(input_shapes[i], list) and len(input_shapes[i]) == 1
+                i < len(input_shapes)
+                and isinstance(input_shapes[i], list)
+                and len(input_shapes[i]) == 1
                 for i in weight_indices
             )
-            if len(input_indices) >= 1 and len(weight_indices) >= 2 and has_rank1_weight:
+            if (
+                len(input_indices) >= 1
+                and len(weight_indices) >= 2
+                and has_rank1_weight
+            ):
                 return True
             # Don't early-return False here; input_types can be incomplete
             # in some traced graphs. Fall through to fallback checks.
@@ -2435,7 +2761,9 @@ class PyTorchToEinsum:
         # Fallback without input_types: x, weight, bias by shape rank pattern.
         if len(input_shapes) >= 3:
             has_rank1 = any(isinstance(s, list) and len(s) == 1 for s in input_shapes)
-            has_rank2_or_more = any(isinstance(s, list) and len(s) >= 2 for s in input_shapes)
+            has_rank2_or_more = any(
+                isinstance(s, list) and len(s) >= 2 for s in input_shapes
+            )
             if has_rank1 and has_rank2_or_more:
                 return True
 
@@ -2458,7 +2786,9 @@ class PyTorchToEinsum:
 
         return False
 
-    def _validate_input_types_alignment(self, node_id: str, node_data: Dict[str, Any]) -> None:
+    def _validate_input_types_alignment(
+        self, node_id: str, node_data: Dict[str, Any]
+    ) -> None:
         """Ensure input_types aligns 1:1 with input_shapes for op nodes.
 
         When the torchview graph collapses multiple tensor inputs into
@@ -2474,7 +2804,9 @@ class PyTorchToEinsum:
         input_shapes = node_data.get("input_shapes") or []
         input_types = node_data.get("input_types") or []
         if len(input_types) < len(input_shapes):
-            input_types = list(input_types) + ["input"] * (len(input_shapes) - len(input_types))
+            input_types = list(input_types) + ["input"] * (
+                len(input_shapes) - len(input_types)
+            )
             node_data["input_types"] = input_types
         elif len(input_types) > len(input_shapes):
             node_type = node_data.get("type", "unknown")
@@ -2516,8 +2848,12 @@ class PyTorchToEinsum:
         # are not emitted in einsum connections.
         output_connections = list(op_graph.successors(node_id))
         if not output_connections:
-            raw_output_connections = list((node_data.get("connections") or {}).get("outputs") or [])
-            output_connections = [c for c in raw_output_connections if c in op_graph.nodes]
+            raw_output_connections = list(
+                (node_data.get("connections") or {}).get("outputs") or []
+            )
+            output_connections = [
+                c for c in raw_output_connections if c in op_graph.nodes
+            ]
 
         # Extract dtypes from the original node for propagation to sub-nodes.
         input_types = node_data.get("input_types") or []
@@ -2525,8 +2861,11 @@ class PyTorchToEinsum:
         output_dtypes = node_data.get("output_dtypes") or []
         act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
         weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if str(t).lower() == "weight" and i < len(input_dtypes)),
+            (
+                input_dtypes[i]
+                for i, t in enumerate(input_types)
+                if str(t).lower() == "weight" and i < len(input_dtypes)
+            ),
             act_dtype,
         )
         out_dtype = output_dtypes[0] if output_dtypes else act_dtype
@@ -2577,8 +2916,16 @@ class PyTorchToEinsum:
                     weight_entry = entry
                     break
 
-        weight_shape = list(weight_entry[2]) if (weight_entry and isinstance(weight_entry[2], list)) else None
-        bias_shape = list(bias_entry[2]) if (bias_entry and isinstance(bias_entry[2], list)) else None
+        weight_shape = (
+            list(weight_entry[2])
+            if (weight_entry and isinstance(weight_entry[2], list))
+            else None
+        )
+        bias_shape = (
+            list(bias_entry[2])
+            if (bias_entry and isinstance(bias_entry[2], list))
+            else None
+        )
 
         # Intermediate shape (output of matmul, input to add)
         matmul_output_shape = output_shapes[0] if output_shapes else []
@@ -2602,9 +2949,9 @@ class PyTorchToEinsum:
             # Fallback equation
             batch_dims = len(input_shapes[0]) - 1 if input_shapes else 0
             batch_letters = [f"B{i}" for i in range(batch_dims)]
-            input_str = ''.join(batch_letters + ["K"])
+            input_str = "".join(batch_letters + ["K"])
             weight_str = "NK"
-            output_str = ''.join(batch_letters + ["N"])
+            output_str = "".join(batch_letters + ["N"])
             matmul_equation = f"{input_str},{weight_str}->{output_str}"
             # Parse the fallback equation back into the operand structure.
             # Tokens are an uppercase letter optionally followed by digits (e.g. B0).
@@ -2625,7 +2972,9 @@ class PyTorchToEinsum:
             activation_conn_id = activation_entry[1]
             # Activation tensors should reference the canonical start node IDs
             # (e.g. start/start_1) after tensor-node collapse.
-            activation_einsum_id = start_node_id_map.get(activation_conn_id, activation_conn_id)
+            activation_einsum_id = start_node_id_map.get(
+                activation_conn_id, activation_conn_id
+            )
             matmul_input_names.append(f"{activation_einsum_id}.Output")
             if isinstance(activation_entry[2], list):
                 matmul_input_shapes_list.append(list(activation_entry[2]))
@@ -2641,7 +2990,9 @@ class PyTorchToEinsum:
             "outputs": [f"{node_id}.Output"],
         }
         matmul_tensor_types = {
-            "inputs": ["input" if i == 0 else "weight" for i in range(len(matmul_input_names))],
+            "inputs": [
+                "input" if i == 0 else "weight" for i in range(len(matmul_input_names))
+            ],
             "outputs": ["output"],
         }
         matmul_tensor_shapes = {
@@ -2680,8 +3031,13 @@ class PyTorchToEinsum:
 
         # === ADD (BIAS) LAYER ===
         # Generate einsum equation for bias add (broadcast add).
-        if matmul_output_shape and bias_shape and len(matmul_output_shape) >= 1 and len(bias_shape) == 1:
-            labels = string.ascii_uppercase[:len(matmul_output_shape)]
+        if (
+            matmul_output_shape
+            and bias_shape
+            and len(matmul_output_shape) >= 1
+            and len(bias_shape) == 1
+        ):
+            labels = string.ascii_uppercase[: len(matmul_output_shape)]
             add_equation = f"{labels},{labels[-1]}->{labels}"
             add_operands = {
                 "Input": list(labels),
@@ -2689,7 +3045,7 @@ class PyTorchToEinsum:
                 "Output": list(labels),
             }
         elif matmul_output_shape:
-            labels = string.ascii_uppercase[:len(matmul_output_shape)]
+            labels = string.ascii_uppercase[: len(matmul_output_shape)]
             add_equation = f"{labels}->{labels}"
             add_operands = {
                 "Input": list(labels),
@@ -2700,7 +3056,9 @@ class PyTorchToEinsum:
             add_operands = None
 
         add_input_names = [f"{node_id}.Output"]
-        add_input_shapes_list = [list(matmul_output_shape)] if matmul_output_shape else []
+        add_input_shapes_list = (
+            [list(matmul_output_shape)] if matmul_output_shape else []
+        )
         add_connection_inputs = [node_id]
 
         if bias_entry and bias_shape:
@@ -2827,7 +3185,9 @@ class PyTorchToEinsum:
                         # consume Model.linear.Output, not its own output).
                         if new_id == layer_id:
                             continue
-                        if name == f"{old_id}.Output" or name.startswith(f"{old_id}.Output_"):
+                        if name == f"{old_id}.Output" or name.startswith(
+                            f"{old_id}.Output_"
+                        ):
                             name = name.replace(f"{old_id}.", f"{new_id}.", 1)
                             break
                     new_input_names.append(name)
@@ -2855,7 +3215,9 @@ class PyTorchToEinsum:
         for subgraph_node_id in input_mapping.values():
             if subgraph_node_id in result["layers"]:
                 subgraph_layer = result["layers"][subgraph_node_id]
-                subgraph_inputs = subgraph_layer.get("connections", {}).get("inputs", [])
+                subgraph_inputs = subgraph_layer.get("connections", {}).get(
+                    "inputs", []
+                )
                 if predecessor_id in subgraph_inputs:
                     return subgraph_node_id
 
@@ -2939,7 +3301,6 @@ class PyTorchToEinsum:
 
         return start_node_id_map
 
-
     def _convert_operation(
         self,
         node_id: str,
@@ -2958,7 +3319,7 @@ class PyTorchToEinsum:
         )
 
         # Get module_args for operations like transpose/permute
-        module_args = node_data.get("module_args", {})
+        module_args = dict(node_data.get("module_args", {}) or {})
 
         # Try to get einsum representation
         equation = ""
@@ -2993,8 +3354,14 @@ class PyTorchToEinsum:
                     reduction_op = einsum_op.reduction_op
                     is_real_einsum = einsum_op.is_real_einsum
                     is_einsum_supportable = einsum_op.is_einsum_supportable
-                    operands = {operand.name: operand.dims for operand in einsum_op.operands}
-                except Exception:
+                    operands = {
+                        operand.name: operand.dims for operand in einsum_op.operands
+                    }
+                except Exception as exc:
+                    if self._strict:
+                        raise ConversionError(
+                            f"cannot convert einsum layer {node_id}: {exc}"
+                        ) from exc
                     equation = ""
                     is_einsum_supportable = True
         else:
@@ -3010,22 +3377,54 @@ class PyTorchToEinsum:
             reduce_dims = None
             keepdim = False
             reduction_ops_with_dim = {
-                "sum", "mean", "prod",
-                "max", "min", "amax", "amin",
-                "argmax", "argmin",
-                "logsumexp", "norm",
-                "std", "var",
-                "all", "any",
-                "nansum", "nanmean",
+                "sum",
+                "mean",
+                "prod",
+                "max",
+                "min",
+                "amax",
+                "amin",
+                "argmax",
+                "argmin",
+                "logsumexp",
+                "norm",
+                "std",
+                "var",
+                "all",
+                "any",
+                "nansum",
+                "nanmean",
             }
             if node_type in reduction_ops_with_dim:
-                reduce_dims, keepdim = self._parse_reduction_args_from_raw_attributes(module_args)
+                reduce_dims, keepdim = self._parse_reduction_args_from_raw_attributes(
+                    module_args
+                )
+                if reduce_dims is not None:
+                    module_args["dim"] = (
+                        reduce_dims[0] if len(reduce_dims) == 1 else reduce_dims
+                    )
+                    module_args["keepdim"] = keepdim
+
+            # torchview commonly leaves functional softmax's keyword arguments
+            # only in raw_attributes.  The executable schema must retain the
+            # actual dimension; guessing -1 would turn a tracing gap into a
+            # potentially false equivalence claim.
+            if node_type in {"softmax", "log_softmax"} and "dim" not in module_args:
+                softmax_dims, _ = self._parse_reduction_args_from_raw_attributes(
+                    module_args
+                )
+                if softmax_dims is not None and len(softmax_dims) == 1:
+                    module_args["dim"] = softmax_dims[0]
 
             try:
                 # Pass module_args, reduce_dims, and keepdim to the analyzer
                 if reduce_dims is not None:
                     einsum_op = self._einsum_analyzer.get_einsum_op(
-                        node_type, ts, module_args=module_args, dims=reduce_dims, keepdim=keepdim
+                        node_type,
+                        ts,
+                        module_args=module_args,
+                        dims=reduce_dims,
+                        keepdim=keepdim,
                     )
                 else:
                     einsum_op = self._einsum_analyzer.get_einsum_op(
@@ -3036,8 +3435,14 @@ class PyTorchToEinsum:
                 reduction_op = einsum_op.reduction_op
                 is_real_einsum = einsum_op.is_real_einsum
                 is_einsum_supportable = einsum_op.is_einsum_supportable
-                operands = {operand.name: operand.dims for operand in einsum_op.operands}
-            except Exception:
+                operands = {
+                    operand.name: operand.dims for operand in einsum_op.operands
+                }
+            except Exception as exc:
+                if self._strict:
+                    raise ConversionError(
+                        f"cannot exactly convert {node_id} ({node_type}): {exc}"
+                    ) from exc
                 equation = ""
                 is_einsum_supportable = self._is_operation_supportable(node_type)
 
@@ -3061,7 +3466,9 @@ class PyTorchToEinsum:
 
         # Build input connections preserving the original PyTorch argument order.
         # Then map tensor-node IDs to start-node IDs where applicable.
-        raw_input_connections = list((node_data.get("connections") or {}).get("inputs") or [])
+        raw_input_connections = list(
+            (node_data.get("connections") or {}).get("inputs") or []
+        )
         if not raw_input_connections:
             raw_input_connections = list(op_graph.predecessors(node_id))
         for info in start_nodes_info:
@@ -3089,7 +3496,9 @@ class PyTorchToEinsum:
         input_types_raw = list(node_data.get("input_types") or [])
         for i, conn_id in enumerate(raw_input_connections):
             mapped = start_node_id_map.get(conn_id, conn_id)
-            itype = str(input_types_raw[i]).lower() if i < len(input_types_raw) else "input"
+            itype = (
+                str(input_types_raw[i]).lower() if i < len(input_types_raw) else "input"
+            )
             if itype == "weight":
                 input_connections.append(mapped)
                 continue
@@ -3139,7 +3548,9 @@ class PyTorchToEinsum:
         # Take tensor input/output types directly from PyTorch graph by index.
         pytorch_input_types = list(node_data.get("input_types") or [])
         if len(pytorch_input_types) < len(input_connections):
-            pytorch_input_types.extend(["input"] * (len(input_connections) - len(pytorch_input_types)))
+            pytorch_input_types.extend(
+                ["input"] * (len(input_connections) - len(pytorch_input_types))
+            )
 
         # Inject input_types into node_data so downstream functions can use it.
         node_data_with_types = dict(node_data)
@@ -3154,25 +3565,34 @@ class PyTorchToEinsum:
         pytorch_output_types = list(node_data.get("output_types") or [])
         if len(pytorch_output_types) < len(tensor_names.get("outputs", [])):
             pytorch_output_types.extend(
-                ["output"] * (len(tensor_names.get("outputs", [])) - len(pytorch_output_types))
+                ["output"]
+                * (len(tensor_names.get("outputs", [])) - len(pytorch_output_types))
             )
         tensor_types = {
             "inputs": list(pytorch_input_types[: len(tensor_names.get("inputs", []))]),
-            "outputs": list(pytorch_output_types[: len(tensor_names.get("outputs", []))]),
+            "outputs": list(
+                pytorch_output_types[: len(tensor_names.get("outputs", []))]
+            ),
         }
 
         # Build tensor_shapes: shapes matching tensor_names order
         tensor_shapes = self._build_tensor_shapes(node_data)
 
         # Validate tensor_names and tensor_shapes match
-        is_valid, error_msg = validate_tensor_names_match_shapes(tensor_names, tensor_shapes)
+        is_valid, error_msg = validate_tensor_names_match_shapes(
+            tensor_names, tensor_shapes
+        )
         if not is_valid:
             # Fix mismatch by aligning counts
             tensor_names, tensor_shapes = self._align_tensor_names_and_shapes(
                 tensor_names, tensor_shapes, node_data
             )
-            tensor_types["inputs"] = tensor_types["inputs"][: len(tensor_names.get("inputs", []))]
-            tensor_types["outputs"] = tensor_types["outputs"][: len(tensor_names.get("outputs", []))]
+            tensor_types["inputs"] = tensor_types["inputs"][
+                : len(tensor_names.get("inputs", []))
+            ]
+            tensor_types["outputs"] = tensor_types["outputs"][
+                : len(tensor_names.get("outputs", []))
+            ]
 
         # Build additional_info for weight/bias metadata
         additional_info = self._build_additional_info(node_data)
@@ -3180,7 +3600,8 @@ class PyTorchToEinsum:
         # Filter out weight connections from connections.inputs
         # (parameter nodes don't exist as layers in the einsum graph)
         activation_connections = [
-            c for i, c in enumerate(input_connections)
+            c
+            for i, c in enumerate(input_connections)
             if not (
                 i < len(pytorch_input_types)
                 and str(pytorch_input_types[i]).lower() == "weight"
@@ -3214,6 +3635,16 @@ class PyTorchToEinsum:
             },
         }
 
+        semantic_args = {
+            str(key): value
+            for key, value in module_args.items()
+            if key != "raw_attributes"
+            and value is not None
+            and isinstance(value, (bool, int, float, str, list, tuple))
+        }
+        if semantic_args:
+            result["module_args"] = semantic_args
+
         if tensor_dtypes:
             result["tensor_dtypes"] = tensor_dtypes
 
@@ -3245,9 +3676,13 @@ class PyTorchToEinsum:
 
         weight_idx = 0
         for i, pred_id in enumerate(input_connections):
-            itype = input_types[i] if i < len(input_types) else 'input'
-            if itype == 'weight':
-                name = f"{node_id}.Weight" if weight_idx == 0 else f"{node_id}.Weight_{weight_idx}"
+            itype = input_types[i] if i < len(input_types) else "input"
+            if itype == "weight":
+                name = (
+                    f"{node_id}.Weight"
+                    if weight_idx == 0
+                    else f"{node_id}.Weight_{weight_idx}"
+                )
                 input_names.append(name)
                 weight_idx += 1
             else:
@@ -3307,7 +3742,7 @@ class PyTorchToEinsum:
                     input_names.append(f"{node_id}.Input_{i}")
             else:
                 # Trim excess names
-                input_names = input_names[:len(input_shapes)]
+                input_names = input_names[: len(input_shapes)]
 
         # Align outputs
         if len(output_names) != len(output_shapes):
@@ -3316,7 +3751,7 @@ class PyTorchToEinsum:
                 for i in range(len(output_names), len(output_shapes)):
                     output_names.append(f"{node_id}.Output_{i}")
             else:
-                output_names = output_names[:len(output_shapes)]
+                output_names = output_names[: len(output_shapes)]
 
         return (
             {"inputs": input_names, "outputs": output_names},
@@ -3350,11 +3785,6 @@ class PyTorchToEinsum:
 
         # Default: supportable unless explicitly unsupportable
         return op not in _UNSUPPORTABLE_OPS
-
-
-
-
-
 
 
 # Backward compatibility alias

@@ -1,0 +1,102 @@
+_type: https://in-toto.io/Statement/v1
+subject:
+- name: reference.py
+  digest:
+    sha256: ead82a3857f3406726c191d7821eac5f54ceab85cc73d384e4f315560006b3a2
+- name: einsum_graph.yaml
+  digest:
+    sha256: ca9eb583c576d10bb6394d6ecbbedd1a9437f03ccf7eb87fd35b778b05aecd26
+predicateType: https://solar-rocm.dev/attestations/source-to-einsum/v2
+predicate:
+  status: passed
+  verifier: solar.verification.einsum.v2
+  reference:
+    entry_point: run
+    input_factory: get_inputs
+  workload:
+    name: n1024
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+  tolerance:
+    atol: 0.01
+    rtol: 0.01
+  execution:
+    device_type: cuda
+    backend: rocm
+    device: cuda:0
+    hip_version: 7.2.26015
+    device_name: AMD Radeon RX 9060 XT
+    gfx_target: gfx1200
+  cases:
+  - parameters:
+      n: 1024
+    seed: 11
+    pattern: random
+  - parameters:
+      n: 1024
+    seed: 11
+    pattern: zeros
+  - parameters:
+      n: 1024
+    seed: 11
+    pattern: boundary
+  - parameters:
+      n: 1024
+    seed: 29
+    pattern: random
+  - parameters:
+      n: 1024
+    seed: 29
+    pattern: zeros
+  - parameters:
+      n: 1024
+    seed: 29
+    pattern: boundary
+  - parameters:
+      n: 1024
+    seed: 47
+    pattern: random
+  - parameters:
+      n: 1024
+    seed: 47
+    pattern: zeros
+  - parameters:
+      n: 1024
+    seed: 47
+    pattern: boundary
+  results:
+  - seed: 11
+    pattern: random
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 11
+    pattern: zeros
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 11
+    pattern: boundary
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 29
+    pattern: random
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 29
+    pattern: zeros
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 29
+    pattern: boundary
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 47
+    pattern: random
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 47
+    pattern: zeros
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0
+  - seed: 47
+    pattern: boundary
+    parameters_sha256: 58d4c66dac47ab48e99fb18da785dc4e7227e50f493d12ffa9168fc99fe5e84f
+    max_abs_error: 0.0

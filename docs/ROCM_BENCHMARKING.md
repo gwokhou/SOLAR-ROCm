@@ -20,9 +20,13 @@ passes, the baseline environment matches exactly, and AMD-SMI reports
 
 `benchmark.yaml` defines a reference Python source with `get_inputs(workload,
 device)` and `run(*inputs)`, one or more workloads, tolerance, precision, and
-either `cold` or `application` cache behavior. Each workload must reference a
-schema-v2 `analysis.yaml` and its source `einsum_graph.yaml`, with SHA-256 for
-both. Manual workload-level FLOPs and fused-byte totals are rejected. The
+either `cold` or `application` cache behavior. The latest and only accepted
+benchmark contract is `schema_version: 2`. Each workload must reference a
+schema-v2 `analysis.yaml`, its source `einsum_graph.yaml`, and a hash-bound
+`verification.yaml` in-toto statement. The statement binds the reference
+source, graph, workload parameters, tolerance, and replayable numerical cases;
+the loader reruns those cases before TSOL or SOL Score can be emitted. Manual
+workload-level FLOPs and fused-byte totals are rejected. The
 artifact contains per-tensor byte traffic and MAC totals grouped by actual
 operation precision; the evaluator records the artifact, graph, benchmark,
 reference, architecture, solution, and environment identities in the bound

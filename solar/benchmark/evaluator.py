@@ -52,6 +52,7 @@ class WorkloadEvaluation:
     timing: dict[str, Any] | None = None
     analysis_sha256: str | None = None
     source_graph_sha256: str | None = None
+    verification_sha256: str | None = None
     failure: str | None = None
 
 
@@ -442,12 +443,32 @@ class RocmEvaluator:
         clocks_locked: bool,
         integrity: _RuntimeIntegrityGuard,
     ) -> WorkloadEvaluation:
+        if workload.status != "compatible":
+            return WorkloadEvaluation(
+                name=workload.name,
+                status=workload.status,
+                failure=(
+                    workload.compatibility.reason_code
+                    if workload.compatibility is not None
+                    else "missing compatibility evidence"
+                ),
+            )
         analysis = workload.analysis
         if analysis is None:
             return WorkloadEvaluation(
                 name=workload.name,
                 status="invalid_analysis",
                 failure="workload has no bound SOLAR analysis artifact",
+            )
+        verification = workload.verification
+        if verification is None:
+            return WorkloadEvaluation(
+                name=workload.name,
+                status="invalid_verification",
+                failure=(
+                    "workload has no replay-verified reference-to-einsum artifact; "
+                    "TSOL and SOL Score are withheld"
+                ),
             )
         item = WorkloadEvaluation(
             name=workload.name,
@@ -457,10 +478,12 @@ class RocmEvaluator:
                     "name": workload.name,
                     "parameters": workload.parameters,
                     "analysis_sha256": analysis.sha256,
+                    "verification_sha256": verification.sha256,
                 }
             ),
             analysis_sha256=analysis.sha256,
             source_graph_sha256=analysis.source_graph_sha256,
+            verification_sha256=verification.sha256,
         )
         try:
 
@@ -477,23 +500,18 @@ class RocmEvaluator:
                 before = _clone(candidate_inputs)
                 expected = reference(*_clone(inputs))
                 actual = guarded_candidate(*candidate_inputs)
-                if not _equal(candidate_inputs, before, benchmark.atol, benchmark.rtol):
+                if not _equal(candidate_inputs, before, workload.atol, workload.rtol):
                     item.status = "reward_hack"
                     item.failure = "candidate modified benchmark inputs"
                     return item
-                if not _equal(actual, expected, benchmark.atol, benchmark.rtol):
+                if not _equal(actual, expected, workload.atol, workload.rtol):
                     item.status = "incorrect"
                     item.failure = (
                         f"candidate output differs from reference for seed {seed}"
                     )
                     item.sol_score = 0.0 if baseline is not None else None
                     return item
-            theoretical_ms = (
-                self.architecture.theoretical_seconds_by_precision(
-                    analysis.macs_by_precision, analysis.fused_bytes
-                )
-                * 1000.0
-            )
+            theoretical_ms = analysis.lower_bound_seconds * 1000.0
             item.theoretical_solar_ms = theoretical_ms
             item.calibrated_solar_ms = calibrated.get(workload.name)
             timer = AdaptiveTimer(policy)
@@ -516,12 +534,12 @@ class RocmEvaluator:
                 nonlocal timed_call
                 timed_call += 1
                 pristine = pool.take_pristine(args)
-                if not _equal(args, pristine, benchmark.atol, benchmark.rtol):
+                if not _equal(args, pristine, workload.atol, workload.rtol):
                     raise _TimedCorrectnessError(
                         "reward_hack", "candidate modified timed benchmark inputs"
                     )
                 expected = reference(*_clone(pristine))
-                if not _equal(actual, expected, benchmark.atol, benchmark.rtol):
+                if not _equal(actual, expected, workload.atol, workload.rtol):
                     raise _TimedCorrectnessError(
                         "incorrect",
                         f"candidate output differs during timed call {timed_call}",

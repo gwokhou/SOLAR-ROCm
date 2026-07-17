@@ -18,45 +18,93 @@ from solar.benchmark.staging import (
     SourceIntegrityError,
     stage_solution,
 )
+from solar.analysis.graph_analyzer import EinsumGraphAnalyzer
+from solar.verification import create_verification_artifact
+from solar.einsum import annotate_semantics
 
 
 def _write_specs(tmp_path: Path) -> tuple[Path, Path, Path]:
     reference = tmp_path / "reference.py"
     reference.write_text(
-        "def get_inputs(workload, device): return []\ndef run(): return 1\n"
+        "import torch\n"
+        "def get_inputs(workload, device):\n"
+        "    g = torch.Generator(device=device).manual_seed(workload['seed'])\n"
+        "    return (torch.randn((1,), generator=g, device=device),)\n"
+        "def run(a): return a.clone()\n"
     )
     source = tmp_path / "solution.py"
     source.write_text("def run(): return 1\n")
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     source_graph = tmp_path / "einsum_graph.yaml"
-    source_graph.write_text("layers: {}\n")
-    graph_digest = hashlib.sha256(source_graph.read_bytes()).hexdigest()
-    analysis = tmp_path / "analysis.yaml"
-    analysis.write_text(
+    source_graph.write_text(
         yaml.safe_dump(
-            {
-                "schema_version": 2,
-                "layers": {},
-                "total": {
-                    "flops": 0,
-                    "fused_bytes": 0,
-                    "macs_by_precision": {},
+            annotate_semantics(
+                {
+                    "layers": {
+                        "start": {
+                            "type": "start",
+                            "tensor_names": {"inputs": [], "outputs": ["a"]},
+                            "tensor_shapes": {"inputs": [], "outputs": [[1]]},
+                            "tensor_dtypes": {
+                                "inputs": [],
+                                "outputs": ["torch.float32"],
+                            },
+                        },
+                        "copy": {
+                            "type": "clone",
+                            "einsum_equation": "A->A",
+                            "elementwise_op": "clone",
+                            "reduction_op": "none",
+                            "is_real_einsum": False,
+                            "is_einsum_supportable": True,
+                            "tensor_names": {"inputs": ["a"], "outputs": ["output"]},
+                            "tensor_types": {
+                                "inputs": ["input"],
+                                "outputs": ["output"],
+                            },
+                            "tensor_shapes": {"inputs": [[1]], "outputs": [[1]]},
+                            "tensor_dtypes": {
+                                "inputs": ["torch.float32"],
+                                "outputs": ["torch.float32"],
+                            },
+                            "connections": {"inputs": ["start"], "outputs": []},
+                        },
+                    }
                 },
-                "metadata": {
-                    "source_graph_sha256": graph_digest,
-                    "dtype_accounting": "per_tensor",
-                    "precision": "fp16",
-                },
-            },
+                strict=True,
+            ),
             sort_keys=False,
         )
     )
+    graph_digest = hashlib.sha256(source_graph.read_bytes()).hexdigest()
+    analysis = tmp_path / "analysis.yaml"
+    result = EinsumGraphAnalyzer().analyze_graph(
+        source_graph,
+        tmp_path,
+        precision="fp32",
+        copy_graph=False,
+        strict=True,
+        architecture="RX_9060_XT",
+    )
+    assert result is not None
     analysis_digest = hashlib.sha256(analysis.read_bytes()).hexdigest()
+    verification = tmp_path / "verification.yaml"
+    create_verification_artifact(
+        reference_path=reference,
+        reference_entry_point="run",
+        input_factory_name="get_inputs",
+        graph_path=source_graph,
+        workload_name="tiny",
+        workload_parameters={},
+        output_path=verification,
+        atol=1e-5,
+        rtol=1e-5,
+    )
     benchmark = tmp_path / "benchmark.yaml"
     benchmark.write_text(
         yaml.safe_dump(
             {
-                "schema_version": 1,
+                "schema_version": 3,
                 "name": "one",
                 "precision": "fp16",
                 "reference": {
@@ -67,11 +115,18 @@ def _write_specs(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "workloads": [
                     {
                         "name": "tiny",
+                        "status": "compatible",
                         "analysis": {
                             "path": "analysis.yaml",
                             "sha256": analysis_digest,
                             "source_graph": "einsum_graph.yaml",
                             "source_graph_sha256": graph_digest,
+                        },
+                        "verification": {
+                            "path": "verification.yaml",
+                            "sha256": hashlib.sha256(
+                                verification.read_bytes()
+                            ).hexdigest(),
                         },
                     }
                 ],
@@ -106,11 +161,20 @@ def test_yaml_contracts_and_hash_verified_staging(tmp_path: Path):
 
 def test_benchmark_hash_covers_reference_source(tmp_path: Path):
     benchmark_path, _, _ = _write_specs(tmp_path)
-    before = BenchmarkSpec.load(benchmark_path).raw_hash
     (tmp_path / "reference.py").write_text(
         "def get_inputs(workload, device): return []\ndef run(): return 2\n"
     )
-    assert BenchmarkSpec.load(benchmark_path).raw_hash != before
+    with pytest.raises(ValueError, match="reference SHA-256"):
+        BenchmarkSpec.load(benchmark_path)
+
+
+def test_benchmark_rejects_legacy_schema(tmp_path: Path):
+    benchmark_path, _, _ = _write_specs(tmp_path)
+    benchmark = yaml.safe_load(benchmark_path.read_text())
+    benchmark["schema_version"] = 1
+    benchmark_path.write_text(yaml.safe_dump(benchmark))
+    with pytest.raises(ValueError, match="latest schema_version=3"):
+        BenchmarkSpec.load(benchmark_path)
 
 
 def test_benchmark_rejects_manual_sol_totals(tmp_path: Path):

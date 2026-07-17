@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 layers:
   matmul:
     type: matmul
@@ -14,23 +14,44 @@ layers:
     fused_elements: 12582912
     fused_bytes: 25165824.0
     tensor_shapes:
-      inputs: [[2048, 2048], [2048, 2048]]
-      outputs: [[2048, 2048]]
+      inputs:
+      - - 2048
+        - 2048
+      - - 2048
+        - 2048
+      outputs:
+      - - 2048
+        - 2048
     tensor_sizes:
-      inputs: [4194304, 4194304]
-      outputs: [4194304]
+      inputs:
+      - 4194304
+      - 4194304
+      outputs:
+      - 4194304
     memory_elements:
-      inputs: [4194304, 4194304]
-      outputs: [4194304]
+      inputs:
+      - 4194304
+      - 4194304
+      outputs:
+      - 4194304
     memory_bytes:
-      inputs: [8388608.0, 8388608.0]
-      outputs: [8388608.0]
+      inputs:
+      - 8388608.0
+      - 8388608.0
+      outputs:
+      - 8388608.0
     tensor_dtypes:
-      inputs: [torch.float16, torch.float16]
-      outputs: [torch.float16]
+      inputs:
+      - torch.float16
+      - torch.float16
+      outputs:
+      - torch.float16
     tensor_types:
-      inputs: [input, input]
-      outputs: [output]
+      inputs:
+      - input
+      - input
+      outputs:
+      - output
     input_elements: 8388608
     output_elements: 4194304
     intermediate_elements: 0
@@ -41,7 +62,9 @@ layers:
     output_is_intermediate: false
     is_orphaned: false
     connections:
-      inputs: [start_a, start_b]
+      inputs:
+      - start_a
+      - start_b
       outputs: []
 total:
   num_layers: 1
@@ -49,7 +72,8 @@ total:
   macs: 8589934592
   other_ops: 0
   flops: 17179869184
-  macs_by_precision: {fp16: 8589934592}
+  macs_by_precision:
+    fp16: 8589934592
   unfused_elements: 12582912
   unfused_bytes: 25165824.0
   orojenesis_elements: null
@@ -57,6 +81,8 @@ total:
   fused_bytes: 25165824.0
   fused_prefetched_elements: 12582912
   fused_prefetched_bytes: 25165824.0
+  prefetched_bytes: 25165824.0
+  lower_bound_seconds: 0.00016679484644660194
   model_io_elements: 12582912
   model_io_bytes: 25165824.0
   intermediate_elements: 0
@@ -69,4 +95,111 @@ metadata:
   bytes_per_element: 2
   dtype_accounting: per_tensor
   source_graph: examples/rocm_matmul/analysis/n2048/einsum_graph.yaml
-  source_graph_sha256: 84f377d6c35d763c66f00ced5c8f3733379f142744eecfbb69080a475210dc8a
+  source_graph_sha256: 0794bc247b5d6f5635fcac7e56caaa35c3d14ca8a91a5606a3db4b9ecfe5482a
+  fusion:
+    decisions: []
+    regions:
+    - id: region_0
+      layers:
+      - matmul
+      external_inputs:
+      - a
+      - b
+      external_outputs:
+      - output
+      unfused_bytes: 25165824
+      fused_bytes: 25165824
+      prefetched_bytes: 25165824
+      peak_live_bytes: 0
+      capacity:
+        vgpr:
+          scope: simd
+          capacity_bytes: null
+          peak_live_bytes: 0
+          spill_bytes_lower_bound: null
+          source: rocminfo does not expose physical VGPR capacity
+        lds:
+          scope: compute_unit
+          capacity_bytes: 65536
+          peak_live_bytes: 0
+          spill_bytes_lower_bound: 0
+          source: rocminfo Agent gfx1200 Pool GROUP Size
+        l1:
+          scope: compute_unit
+          capacity_bytes: 32768
+          peak_live_bytes: 0
+          spill_bytes_lower_bound: 0
+          source: rocminfo Agent gfx1200 Cache Info L1
+        l2:
+          scope: device
+          capacity_bytes: 4194304
+          peak_live_bytes: 0
+          spill_bytes_lower_bound: 0
+          source: rocminfo Agent gfx1200 Cache Info L2
+        l3:
+          scope: device
+          capacity_bytes: 33554432
+          peak_live_bytes: 0
+          spill_bytes_lower_bound: 0
+          source: rocminfo Agent gfx1200 Cache Info L3
+        vram:
+          scope: device
+          capacity_bytes: 17179869184
+          peak_live_bytes: 0
+          spill_bytes_lower_bound: 0
+          source: AMD product specification
+  orojenesis:
+    status: not_requested
+    layers: {}
+  architecture:
+    name: Radeon_RX_9060_XT
+    vendor: AMD
+    gfx_target: gfx1200
+    compute_units: 32
+    memory_capacity_bytes: 17179869184
+    memory_bandwidth_bytes_per_second: 320000000000.0
+    l2_bytes: 4194304
+    last_level_cache_bytes: 33554432
+    peak_ops_per_second:
+      fp32: 25600000000000.0
+      fp16: 103000000000000.0
+      bf16: 103000000000000.0
+      fp8: 205000000000000.0
+      int8: 205000000000000.0
+      int4: 410000000000000.0
+    precision_aliases:
+      float8_e4m3fnuz: fp8
+      float8_e5m2fnuz: fp8
+    clock_hz: 3130000000.0
+    source: https://www.amd.com/en/products/specifications/graphics.html
+    memory_hierarchy:
+    - name: vgpr
+      scope: simd
+      capacity_bytes: null
+      bandwidth_bytes_per_second: null
+      source: rocminfo does not expose physical VGPR capacity
+    - name: lds
+      scope: compute_unit
+      capacity_bytes: 65536
+      bandwidth_bytes_per_second: null
+      source: rocminfo Agent gfx1200 Pool GROUP Size
+    - name: l1
+      scope: compute_unit
+      capacity_bytes: 32768
+      bandwidth_bytes_per_second: null
+      source: rocminfo Agent gfx1200 Cache Info L1
+    - name: l2
+      scope: device
+      capacity_bytes: 4194304
+      bandwidth_bytes_per_second: null
+      source: rocminfo Agent gfx1200 Cache Info L2
+    - name: l3
+      scope: device
+      capacity_bytes: 33554432
+      bandwidth_bytes_per_second: null
+      source: rocminfo Agent gfx1200 Cache Info L3
+    - name: vram
+      scope: device
+      capacity_bytes: 17179869184
+      bandwidth_bytes_per_second: 320000000000.0
+      source: AMD product specification

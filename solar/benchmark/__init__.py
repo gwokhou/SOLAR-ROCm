@@ -9,6 +9,7 @@ from solar.benchmark.models import (
     AnalysisArtifact,
     BaselineRegistry,
     BenchmarkSpec,
+    CompatibilityArtifact,
     SolutionSpec,
 )
 
@@ -16,6 +17,7 @@ __all__ = [
     "AnalysisArtifact",
     "BaselineRegistry",
     "BenchmarkSpec",
+    "CompatibilityArtifact",
     "CalibrationArtifact",
     "EvaluationReport",
     "RocmCalibrator",

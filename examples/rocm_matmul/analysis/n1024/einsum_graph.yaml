@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
 # SPDX-License-Identifier: Apache-2.0
 
+schema_version: 3
 model_name: rocm_fp16_matmul_n1024
 layers:
   start_a:
@@ -11,6 +12,11 @@ layers:
     tensor_shapes: {inputs: [], outputs: [[1024, 1024]]}
     connections: {inputs: [], outputs: [matmul]}
     tensor_dtypes: {inputs: [], outputs: [torch.float16]}
+    semantic_op:
+      kind: input
+      target: input
+      arguments: []
+      kwargs: {}
   start_b:
     type: start
     is_real_einsum: false
@@ -19,6 +25,11 @@ layers:
     tensor_shapes: {inputs: [], outputs: [[1024, 1024]]}
     connections: {inputs: [], outputs: [matmul]}
     tensor_dtypes: {inputs: [], outputs: [torch.float16]}
+    semantic_op:
+      kind: input
+      target: input
+      arguments: []
+      kwargs: {}
   matmul:
     type: matmul
     einsum_equation: MK,KN->MN
@@ -36,3 +47,10 @@ layers:
     tensor_dtypes:
       inputs: [torch.float16, torch.float16]
       outputs: [torch.float16]
+    semantic_op:
+      kind: einsum
+      target: einsum
+      equation: MK,KN->MN
+      arguments: [{tensor: 0}, {tensor: 1}]
+      kwargs: {}
+      effects: {mutates: [], aliases: [], atomic: false, opaque_library_call: false}

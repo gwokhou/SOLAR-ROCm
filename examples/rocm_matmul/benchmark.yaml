@@ -1,7 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
-# SPDX-License-Identifier: Apache-2.0
-
-schema_version: 1
+schema_version: 3
 name: rocm_fp16_matmul
 precision: fp16
 cache_policy: cold
@@ -13,17 +10,27 @@ tolerance:
   atol: 0.01
   rtol: 0.01
 workloads:
-  - name: n1024
-    parameters: {n: 1024}
-    analysis:
-      path: analysis/n1024/analysis.yaml
-      sha256: a9e1dd8894bf61877e27ac506f3895e63f1816cbc18429698b1173616f3a719d
-      source_graph: analysis/n1024/einsum_graph.yaml
-      source_graph_sha256: 49b94e88e126338d88ff7b1e1c56c9d7e39101e175d768b8ee2d6b1615ace01c
-  - name: n2048
-    parameters: {n: 2048}
-    analysis:
-      path: analysis/n2048/analysis.yaml
-      sha256: fda669a8625aaecca73bb503e424ed0608e24c8f1e6d5983bc9218bf463b115c
-      source_graph: analysis/n2048/einsum_graph.yaml
-      source_graph_sha256: 84f377d6c35d763c66f00ced5c8f3733379f142744eecfbb69080a475210dc8a
+- name: n1024
+  status: compatible
+  parameters:
+    n: 1024
+  analysis:
+    path: analysis/n1024/analysis.yaml
+    sha256: 11dd6e5229852eb7576a5d68121d03194c5aa7647a1c3c6a78ca14c8b8e505d0
+    source_graph: analysis/n1024/einsum_graph.yaml
+    source_graph_sha256: ca9eb583c576d10bb6394d6ecbbedd1a9437f03ccf7eb87fd35b778b05aecd26
+  verification:
+    path: verification/n1024/verification.yaml
+    sha256: 52a0b6c88d151456c3c44c8bc78134b7054f1dd2e7fa604ade95a80a469c3d65
+- name: n2048
+  status: compatible
+  parameters:
+    n: 2048
+  analysis:
+    path: analysis/n2048/analysis.yaml
+    sha256: eddac0258864f3a56f8636c405290d5ac1f585889194d9effcd74c600027b195
+    source_graph: analysis/n2048/einsum_graph.yaml
+    source_graph_sha256: 0794bc247b5d6f5635fcac7e56caaa35c3d14ca8a91a5606a3db4b9ecfe5482a
+  verification:
+    path: verification/n2048/verification.yaml
+    sha256: 5d962b8d48e60fe0a3d4d8ef20e42188f1da4018d71e4278697596d6e13b9211

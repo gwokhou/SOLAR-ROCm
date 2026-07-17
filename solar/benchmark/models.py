@@ -53,6 +53,7 @@ class AnalysisArtifact:
     flops: float
     fused_bytes: float
     macs_by_precision: dict[str, float]
+    lower_bound_seconds: float
 
     @classmethod
     def load(cls, data: Mapping[str, Any], source_root: Path) -> "AnalysisArtifact":
@@ -82,10 +83,10 @@ class AnalysisArtifact:
         artifact = yaml.safe_load(analysis_path.read_text()) or {}
         if (
             not isinstance(artifact, dict)
-            or int(artifact.get("schema_version", 0)) != 2
+            or int(artifact.get("schema_version", 0)) != 3
         ):
             raise ValueError(
-                "benchmark analysis must use SOLAR analysis schema_version=2"
+                "benchmark analysis must use latest SOLAR analysis schema_version=3"
             )
         total = artifact.get("total") or {}
         metadata = artifact.get("metadata") or {}
@@ -95,7 +96,7 @@ class AnalysisArtifact:
             raise ValueError(
                 "benchmark analysis requires explicit dtype for every tensor"
             )
-        required = {"flops", "fused_bytes", "macs_by_precision"}
+        required = {"flops", "fused_bytes", "macs_by_precision", "lower_bound_seconds"}
         if not required.issubset(total):
             raise ValueError(
                 "analysis total must contain flops, fused_bytes, and macs_by_precision"
@@ -106,9 +107,11 @@ class AnalysisArtifact:
         }
         flops = float(total["flops"])
         fused_bytes = float(total["fused_bytes"])
+        lower_bound_seconds = float(total["lower_bound_seconds"])
         if (
             flops < 0
             or fused_bytes < 0
+            or lower_bound_seconds < 0
             or any(value < 0 for value in macs_by_precision.values())
         ):
             raise ValueError("analysis compute and traffic totals must be non-negative")
@@ -127,6 +130,7 @@ class AnalysisArtifact:
                 output,
                 precision=str(metadata.get("precision", "fp16")),
                 copy_graph=False,
+                architecture=metadata.get("architecture"),
             )
         if derived is None:
             raise ValueError("failed to rederive bound SOLAR analysis")
@@ -141,11 +145,13 @@ class AnalysisArtifact:
                 str(key).lower(): float(value)
                 for key, value in (derived_total.get("macs_by_precision") or {}).items()
             },
+            "lower_bound_seconds": float(derived_total.get("lower_bound_seconds", -1)),
         }
         artifact_identity = {
             "flops": flops,
             "fused_bytes": fused_bytes,
             "macs_by_precision": macs_by_precision,
+            "lower_bound_seconds": lower_bound_seconds,
         }
         if derived_identity != artifact_identity:
             raise ValueError("analysis totals drifted from the bound source graph")
@@ -157,6 +163,7 @@ class AnalysisArtifact:
             flops=flops,
             fused_bytes=fused_bytes,
             macs_by_precision=macs_by_precision,
+            lower_bound_seconds=lower_bound_seconds,
         )
 
     @staticmethod
@@ -168,27 +175,202 @@ class AnalysisArtifact:
 
 
 @dataclass(frozen=True)
+class VerificationArtifact:
+    """Replay-verified in-toto statement binding reference to einsum graph."""
+
+    path: str
+    sha256: str
+    reference_sha256: str
+    source_graph_sha256: str
+
+    @classmethod
+    def load(
+        cls,
+        data: Mapping[str, Any],
+        source_root: Path,
+        *,
+        reference_path: Path,
+        graph_path: Path,
+        workload_name: str,
+        workload_parameters: Mapping[str, Any],
+        atol: float,
+        rtol: float,
+    ) -> "VerificationArtifact":
+        path = _relative_path(str(data.get("path", "")), "verification.path")
+        digest = AnalysisArtifact._parse_sha256(
+            data.get("sha256"), "verification.sha256"
+        )
+        artifact_path = (source_root / path).resolve()
+        if source_root not in artifact_path.parents or not artifact_path.is_file():
+            raise ValueError("verification.path is outside the benchmark or missing")
+        if hashlib.sha256(artifact_path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"SHA-256 mismatch: {path}")
+        artifact = yaml.safe_load(artifact_path.read_text()) or {}
+        if not isinstance(artifact, Mapping):
+            raise ValueError("verification artifact must be a mapping")
+
+        from solar.verification import replay_verification_artifact
+
+        replay_verification_artifact(
+            artifact,
+            reference_path=reference_path,
+            graph_path=graph_path,
+            workload_name=workload_name,
+            workload_parameters=workload_parameters,
+            atol=atol,
+            rtol=rtol,
+        )
+        return cls(
+            path=path,
+            sha256=digest,
+            reference_sha256=hashlib.sha256(reference_path.read_bytes()).hexdigest(),
+            source_graph_sha256=hashlib.sha256(graph_path.read_bytes()).hexdigest(),
+        )
+
+
+@dataclass(frozen=True)
+class CompatibilityArtifact:
+    """Hash-bound evidence explaining why a workload was not built."""
+
+    path: str
+    sha256: str
+    status: str
+    reason_code: str
+
+    @classmethod
+    def load(
+        cls, data: Mapping[str, Any], source_root: Path
+    ) -> "CompatibilityArtifact":
+        path = _relative_path(str(data.get("path", "")), "compatibility.path")
+        digest = AnalysisArtifact._parse_sha256(
+            data.get("sha256"), "compatibility.sha256"
+        )
+        artifact_path = (source_root / path).resolve()
+        if source_root not in artifact_path.parents or not artifact_path.is_file():
+            raise ValueError("compatibility.path is outside the benchmark or missing")
+        if hashlib.sha256(artifact_path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"SHA-256 mismatch: {path}")
+        artifact = yaml.safe_load(artifact_path.read_text()) or {}
+        status = str(artifact.get("status", ""))
+        reason_code = str(artifact.get("reason_code", ""))
+        if status not in {
+            "compatible",
+            "incompatible",
+            "execution_failed",
+            "not_checked",
+        }:
+            raise ValueError("compatibility artifact has an invalid status")
+        if not reason_code:
+            raise ValueError("compatibility artifact requires a reason_code")
+        return cls(path=path, sha256=digest, status=status, reason_code=reason_code)
+
+
+@dataclass(frozen=True)
 class WorkloadSpec:
     name: str
+    status: str = "compatible"
+    uuid: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
     analysis: AnalysisArtifact | None = None
+    verification: VerificationArtifact | None = None
+    compatibility: CompatibilityArtifact | None = None
+    atol: float = 1e-5
+    rtol: float = 1e-5
 
     @classmethod
     def from_dict(
-        cls, data: Mapping[str, Any], index: int, source_root: Path
+        cls,
+        data: Mapping[str, Any],
+        index: int,
+        source_root: Path,
+        *,
+        reference_path: Path,
+        atol: float,
+        rtol: float,
     ) -> "WorkloadSpec":
         if "flops" in data or "fused_bytes" in data:
             raise ValueError(
                 "manual workload flops/fused_bytes are unsupported; reference a "
                 "hash-bound SOLAR analysis artifact"
             )
+        name = str(data.get("name", f"workload_{index}"))
+        status = str(data.get("status", ""))
+        parameters = dict(data.get("parameters") or {})
+        local_tolerance = data.get("tolerance") or {}
+        workload_atol = float(
+            local_tolerance.get("max_atol", local_tolerance.get("atol", atol))
+        )
+        workload_rtol = float(
+            local_tolerance.get("max_rtol", local_tolerance.get("rtol", rtol))
+        )
+        if status != "compatible":
+            if status not in {"incompatible", "execution_failed", "not_checked"}:
+                raise ValueError(f"invalid workload status: {status}")
+            if data.get("analysis") is not None or data.get("verification") is not None:
+                raise ValueError(
+                    "non-compatible workloads cannot contain SOL artifacts"
+                )
+            compatibility_data = data.get("compatibility")
+            if not isinstance(compatibility_data, Mapping):
+                raise ValueError(
+                    "non-compatible workloads require compatibility evidence"
+                )
+            compatibility = CompatibilityArtifact.load(compatibility_data, source_root)
+            if compatibility.status != status:
+                raise ValueError(
+                    "workload status disagrees with compatibility artifact"
+                )
+            return cls(
+                name=name,
+                status=status,
+                uuid=str(data.get("uuid", "")) or None,
+                parameters=parameters,
+                compatibility=compatibility,
+                atol=workload_atol,
+                rtol=workload_rtol,
+            )
+
         analysis_data = data.get("analysis")
         if not isinstance(analysis_data, Mapping):
-            raise ValueError("each workload requires an analysis artifact")
+            raise ValueError("compatible workloads require an analysis artifact")
+        analysis = AnalysisArtifact.load(analysis_data, source_root)
+        verification_data = data.get("verification")
+        verification = None
+        if verification_data is not None:
+            if not isinstance(verification_data, Mapping):
+                raise ValueError("workload verification must be a mapping")
+            verification = VerificationArtifact.load(
+                verification_data,
+                source_root,
+                reference_path=reference_path,
+                graph_path=(source_root / analysis.source_graph).resolve(),
+                workload_name=name,
+                workload_parameters=parameters,
+                atol=workload_atol,
+                rtol=workload_rtol,
+            )
+        else:
+            raise ValueError(
+                "compatible workloads require a replayable verification artifact"
+            )
+        compatibility = None
+        compatibility_data = data.get("compatibility")
+        if compatibility_data is not None:
+            if not isinstance(compatibility_data, Mapping):
+                raise ValueError("workload compatibility must be a mapping")
+            compatibility = CompatibilityArtifact.load(compatibility_data, source_root)
+            if compatibility.status != "compatible":
+                raise ValueError("compatible workload has non-compatible evidence")
         return cls(
-            name=str(data.get("name", f"workload_{index}")),
-            parameters=dict(data.get("parameters") or {}),
-            analysis=AnalysisArtifact.load(analysis_data, source_root),
+            name=name,
+            status=status,
+            uuid=str(data.get("uuid", "")) or None,
+            parameters=parameters,
+            analysis=analysis,
+            verification=verification,
+            compatibility=compatibility,
+            atol=workload_atol,
+            rtol=workload_rtol,
         )
 
 
@@ -205,7 +387,7 @@ class BenchmarkSpec:
     rtol: float = 1e-5
     cache_policy: str = "cold"
     precision: str = "fp16"
-    schema_version: int = 1
+    schema_version: int = 3
     raw_hash: str = ""
 
     @classmethod
@@ -227,8 +409,18 @@ class BenchmarkSpec:
         identity = dict(data)
         identity["reference_sha256"] = reference_sha256
         tolerance = data.get("tolerance") or {}
+        schema_version = int(data.get("schema_version", 0))
+        atol = float(tolerance.get("atol", 1e-5))
+        rtol = float(tolerance.get("rtol", 1e-5))
         workloads = tuple(
-            WorkloadSpec.from_dict(item, i, resolved.parent)
+            WorkloadSpec.from_dict(
+                item,
+                i,
+                resolved.parent,
+                reference_path=reference_path,
+                atol=atol,
+                rtol=rtol,
+            )
             for i, item in enumerate(data.get("workloads") or [])
         )
         result = cls(
@@ -239,11 +431,11 @@ class BenchmarkSpec:
             reference_entry_point=str(reference.get("entry_point", "run")),
             input_factory=str(reference.get("input_factory", "get_inputs")),
             workloads=workloads,
-            atol=float(tolerance.get("atol", 1e-5)),
-            rtol=float(tolerance.get("rtol", 1e-5)),
+            atol=atol,
+            rtol=rtol,
             cache_policy=str(data.get("cache_policy", "cold")),
             precision=str(data.get("precision", "fp16")),
-            schema_version=int(data.get("schema_version", 1)),
+            schema_version=schema_version,
             raw_hash=canonical_hash(identity),
         )
         result.validate()
@@ -252,9 +444,10 @@ class BenchmarkSpec:
     def validate(self) -> None:
         if not self.name or not self.workloads:
             raise ValueError("benchmark name and at least one workload are required")
-        if self.schema_version != 1:
+        if self.schema_version != 3:
             raise ValueError(
-                f"unsupported benchmark schema version: {self.schema_version}"
+                "benchmark must use latest schema_version=3 with a verified "
+                "source-to-SOL chain"
             )
         if self.cache_policy not in SUPPORTED_CACHE_POLICIES:
             raise ValueError(f"unsupported cache policy: {self.cache_policy}")
@@ -435,8 +628,10 @@ __all__ = [
     "AnalysisArtifact",
     "BaselineRegistry",
     "BenchmarkSpec",
+    "CompatibilityArtifact",
     "SolutionSpec",
     "SourceFile",
+    "VerificationArtifact",
     "WorkloadSpec",
     "canonical_hash",
 ]

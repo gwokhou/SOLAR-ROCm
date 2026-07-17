@@ -49,6 +49,14 @@ from typing import Any, Dict, List, Optional, Set, Union
 import yaml
 
 from solar.einsum import EinsumAnalyzer
+from solar.einsum.semantics import (
+    EINSUM_GRAPH_SCHEMA_VERSION,
+    SemanticGraphError,
+    validate_semantic_graph,
+)
+from solar.analysis.fusion import FusionPlanner
+from solar.analysis.orojenesis import OrojenesisRunner, select_capacity_point
+from solar.rocm.architecture import ArchitectureProfile
 from solar.common.constants import (
     BYTES_PER_ELEMENT,
     DEFAULT_PRECISION,
@@ -82,6 +90,10 @@ class EinsumGraphAnalyzer:
         *,
         precision: str = DEFAULT_PRECISION,
         copy_graph: bool = True,
+        strict: bool = False,
+        architecture: str | Path | ArchitectureProfile | None = None,
+        orojenesis_runner: OrojenesisRunner | None = None,
+        require_orojenesis: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Analyze an einsum graph and write `analysis.yaml`.
 
@@ -91,6 +103,7 @@ class EinsumGraphAnalyzer:
             precision: Tensor precision for byte calculations (e.g., fp32, bf16).
             copy_graph: If True, copy the einsum graph into output dir using the
                 canonical name `einsum_graph.yaml`.
+            strict: Reject unsupported layers and every implicit dtype fallback.
 
         Returns:
             Analysis dict, or None on failure.
@@ -117,6 +130,25 @@ class EinsumGraphAnalyzer:
                 print(f"Debug: failed reading einsum graph: {exc}")
             return None
 
+        semantic_graph = (
+            int(graph.get("schema_version", 0)) == EINSUM_GRAPH_SCHEMA_VERSION
+        )
+        if strict and not semantic_graph:
+            raise ValueError(
+                "strict analysis requires executable semantics: "
+                f"einsum graph must use latest schema_version={EINSUM_GRAPH_SCHEMA_VERSION}"
+            )
+        semantic_complete = False
+        if semantic_graph:
+            try:
+                validate_semantic_graph(graph)
+                semantic_complete = True
+            except SemanticGraphError as exc:
+                if strict:
+                    raise ValueError(
+                        f"strict analysis requires executable semantics: {exc}"
+                    ) from exc
+
         if copy_graph:
             try:
                 dst = out_dir / "einsum_graph.yaml"
@@ -127,6 +159,30 @@ class EinsumGraphAnalyzer:
                     print("Debug: failed to copy einsum_graph.yaml")
 
         all_layers: Dict[str, Any] = graph.get("layers") or {}
+        if strict:
+            failures: List[str] = []
+            for layer_id, layer in all_layers.items():
+                layer_type = str(layer.get("type", "")).lower()
+                if layer_type != "start":
+                    if layer.get("is_einsum_supportable") is not True:
+                        failures.append(f"{layer_id}: unsupported operation")
+                    semantic = layer.get("semantic_op") or {}
+                    if semantic.get("kind") == "einsum" and not layer.get(
+                        "einsum_equation"
+                    ):
+                        failures.append(f"{layer_id}: empty einsum equation")
+                shapes = layer.get("tensor_shapes") or {}
+                dtypes = layer.get("tensor_dtypes") or {}
+                for side in ("inputs", "outputs"):
+                    if len(shapes.get(side) or []) != len(dtypes.get(side) or []):
+                        failures.append(
+                            f"{layer_id}: missing explicit {side} dtype metadata"
+                        )
+            if failures:
+                raise ValueError(
+                    "strict analysis refused an untrusted graph:\n- "
+                    + "\n- ".join(failures)
+                )
         requested_precision = normalize_dtype(precision)
         element_size = BYTES_PER_ELEMENT[requested_precision]
 
@@ -838,8 +894,80 @@ class EinsumGraphAnalyzer:
             sum(layer.get("model_io_bytes", 0) for layer in layers_out.values())
         )
 
+        fusion: dict[str, Any] | None = None
+        orojenesis: dict[str, Any] = {
+            "status": "not_applicable" if not semantic_graph else "not_requested",
+            "layers": {},
+        }
+        profile: ArchitectureProfile | None = None
+        audited_fused_bytes = total_fused_bytes
+        audited_prefetched_bytes = total_fused_bytes
+        if semantic_graph and semantic_complete:
+            if isinstance(architecture, ArchitectureProfile):
+                profile = architecture
+            elif architecture is not None:
+                profile = ArchitectureProfile.load(architecture)
+            hierarchy = profile.memory_hierarchy if profile is not None else ()
+            fusion = FusionPlanner(graph).plan(hierarchy)
+            audited_fused_bytes = float(
+                sum(region["fused_bytes"] for region in fusion["regions"])
+            )
+            audited_prefetched_bytes = float(
+                sum(region["prefetched_bytes"] for region in fusion["regions"])
+            )
+
+            einsum_layers = {
+                layer_id: layer
+                for layer_id, layer in layers_in.items()
+                if (layer.get("semantic_op") or {}).get("kind") == "einsum"
+            }
+            if einsum_layers and orojenesis_runner is None and require_orojenesis:
+                raise ValueError(
+                    "strict formal analysis requires the pinned Orojenesis toolchain"
+                )
+            if orojenesis_runner is not None:
+                orojenesis["status"] = "complete"
+                last_cache = None
+                if profile is not None:
+                    known = [
+                        level
+                        for level in profile.memory_hierarchy
+                        if level.capacity_bytes is not None and level.name != "vram"
+                    ]
+                    last_cache = max(
+                        known,
+                        key=lambda level: int(level.capacity_bytes or 0),
+                        default=None,
+                    )
+                for layer_id, layer in einsum_layers.items():
+                    dtypes = (layer.get("tensor_dtypes") or {}).get("inputs") or []
+                    bits = max(
+                        (int(dtype_bytes(str(dtype)) * 8) for dtype in dtypes),
+                        default=int(element_size * 8),
+                    )
+                    result = orojenesis_runner.run_layer(
+                        layer, out_dir / "orojenesis" / layer_id, word_bits=bits
+                    )
+                    if last_cache is not None:
+                        result["selected_capacity"] = {
+                            "level": last_cache.name,
+                            "capacity_bytes": last_cache.capacity_bytes,
+                            "point": select_capacity_point(
+                                result["curve"], int(last_cache.capacity_bytes or 0)
+                            ),
+                        }
+                    orojenesis["layers"][layer_id] = result
+            elif not einsum_layers:
+                orojenesis["status"] = "not_applicable"
+
+        lower_bound_seconds = None
+        if profile is not None and semantic_graph and semantic_complete:
+            lower_bound_seconds = profile.theoretical_seconds_by_precision(
+                macs_by_precision, audited_prefetched_bytes
+            )
+
         analysis: Dict[str, Any] = {
-            "schema_version": 2,
+            "schema_version": 3 if semantic_graph else 2,
             "layers": layers_out,
             "total": {
                 "num_layers": len(layers_out),
@@ -850,11 +978,22 @@ class EinsumGraphAnalyzer:
                 "macs_by_precision": dict(sorted(macs_by_precision.items())),
                 "unfused_elements": int(total_unfused_elems),
                 "unfused_bytes": total_unfused_bytes,
-                "orojenesis_elements": None,
+                "orojenesis_elements": (
+                    None
+                    if not orojenesis["layers"]
+                    else sum(
+                        float(layer_result["selected_capacity"]["point"]["dram_bytes"])
+                        / element_size
+                        for layer_result in orojenesis["layers"].values()
+                        if (layer_result.get("selected_capacity") or {}).get("point")
+                    )
+                ),
                 "fused_elements": int(total_fused_elems),
-                "fused_bytes": total_fused_bytes,
+                "fused_bytes": audited_fused_bytes,
                 "fused_prefetched_elements": total_fused_prefetched_elems,
-                "fused_prefetched_bytes": total_fused_bytes,
+                "fused_prefetched_bytes": audited_prefetched_bytes,
+                "prefetched_bytes": audited_prefetched_bytes,
+                "lower_bound_seconds": lower_bound_seconds,
                 "model_io_elements": int(total_model_io_elems),
                 "model_io_bytes": total_model_io_bytes,
                 "intermediate_elements": int(total_intermediate_elems),
@@ -871,6 +1010,9 @@ class EinsumGraphAnalyzer:
                 ),
                 "source_graph": str(src),
                 "source_graph_sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
+                "fusion": fusion,
+                "orojenesis": orojenesis,
+                "architecture": profile.to_dict() if profile is not None else None,
             },
         }
 

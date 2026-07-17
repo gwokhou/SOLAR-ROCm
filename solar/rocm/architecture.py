@@ -22,6 +22,31 @@ _PRECISION_ALIASES = {
 
 
 @dataclass(frozen=True)
+class MemoryLevel:
+    """One explicitly sourced AMD memory level; unknown values stay unknown."""
+
+    name: str
+    scope: str
+    capacity_bytes: int | None
+    bandwidth_bytes_per_second: float | None = None
+    source: str | None = None
+
+    @classmethod
+    def load(cls, data: Mapping[str, Any]) -> "MemoryLevel":
+        capacity = data.get("capacity_bytes")
+        bandwidth = data.get("bandwidth_bytes_per_second")
+        return cls(
+            name=str(data.get("name", "")),
+            scope=str(data.get("scope", "")),
+            capacity_bytes=int(capacity) if capacity is not None else None,
+            bandwidth_bytes_per_second=(
+                float(bandwidth) if bandwidth is not None else None
+            ),
+            source=str(data.get("source", "")) or None,
+        )
+
+
+@dataclass(frozen=True)
 class ArchitectureProfile:
     """Normalized AMD hardware limits used by SOL roofline calculations."""
 
@@ -37,6 +62,7 @@ class ArchitectureProfile:
     precision_aliases: dict[str, str] = field(default_factory=dict)
     clock_hz: float | None = None
     source: str | None = None
+    memory_hierarchy: tuple[MemoryLevel, ...] = ()
 
     @classmethod
     def load(cls, value: str | Path | Mapping[str, Any]) -> "ArchitectureProfile":
@@ -85,6 +111,9 @@ class ArchitectureProfile:
             },
             clock_hz=(float(data["clock_hz"]) if data.get("clock_hz") else None),
             source=str(data.get("source") or source or "") or None,
+            memory_hierarchy=tuple(
+                MemoryLevel.load(item) for item in (data.get("memory_hierarchy") or [])
+            ),
         )
         profile.validate()
         return profile
@@ -100,6 +129,19 @@ class ArchitectureProfile:
             value <= 0 for value in self.peak_ops_per_second.values()
         ):
             raise ValueError("at least one positive peak throughput is required")
+        names = [level.name for level in self.memory_hierarchy]
+        if len(names) != len(set(names)):
+            raise ValueError("memory hierarchy level names must be unique")
+        for level in self.memory_hierarchy:
+            if not level.name or not level.scope:
+                raise ValueError("memory hierarchy levels require name and scope")
+            if level.capacity_bytes is not None and level.capacity_bytes <= 0:
+                raise ValueError("memory hierarchy capacities must be positive")
+            if (
+                level.bandwidth_bytes_per_second is not None
+                and level.bandwidth_bytes_per_second <= 0
+            ):
+                raise ValueError("memory hierarchy bandwidths must be positive")
 
     def peak_for(self, precision: str) -> float:
         key = self.normalize_precision(precision)
@@ -154,4 +196,14 @@ class ArchitectureProfile:
             "precision_aliases": dict(self.precision_aliases),
             "clock_hz": self.clock_hz,
             "source": self.source,
+            "memory_hierarchy": [
+                {
+                    "name": level.name,
+                    "scope": level.scope,
+                    "capacity_bytes": level.capacity_bytes,
+                    "bandwidth_bytes_per_second": level.bandwidth_bytes_per_second,
+                    "source": level.source,
+                }
+                for level in self.memory_hierarchy
+            ],
         }

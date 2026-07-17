@@ -9,6 +9,32 @@ memory_capacity_bytes: 17179869184
 memory_bandwidth_bytes_per_second: 320000000000
 l2_bytes: 4194304
 last_level_cache_bytes: 33554432
+memory_hierarchy:
+  - name: vgpr
+    scope: simd
+    capacity_bytes: null
+    source: rocminfo does not expose physical VGPR capacity
+  - name: lds
+    scope: compute_unit
+    capacity_bytes: 65536
+    source: rocminfo Agent gfx1200 Pool GROUP Size
+  - name: l1
+    scope: compute_unit
+    capacity_bytes: 32768
+    source: rocminfo Agent gfx1200 Cache Info L1
+  - name: l2
+    scope: device
+    capacity_bytes: 4194304
+    source: rocminfo Agent gfx1200 Cache Info L2
+  - name: l3
+    scope: device
+    capacity_bytes: 33554432
+    source: rocminfo Agent gfx1200 Cache Info L3
+  - name: vram
+    scope: device
+    capacity_bytes: 17179869184
+    bandwidth_bytes_per_second: 320000000000
+    source: AMD product specification
 # Maximum boost clock used to express per-cycle diagnostics. The formal SOL
 # calculation uses the published per-second throughput and bandwidth below.
 clock_hz: 3130000000

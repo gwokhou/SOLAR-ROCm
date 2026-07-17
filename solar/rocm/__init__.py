@@ -3,7 +3,7 @@
 
 """ROCm platform discovery and architecture descriptions."""
 
-from solar.rocm.architecture import ArchitectureProfile
+from solar.rocm.architecture import ArchitectureProfile, MemoryLevel
 from solar.rocm.environment import RocmEnvironment
 
-__all__ = ["ArchitectureProfile", "RocmEnvironment"]
+__all__ = ["ArchitectureProfile", "MemoryLevel", "RocmEnvironment"]

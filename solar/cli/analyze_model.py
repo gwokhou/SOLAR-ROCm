@@ -54,6 +54,11 @@ def main() -> None:
         help="Do not copy einsum_graph.yaml into the output directory.",
     )
     parser.add_argument(
+        "--official",
+        action="store_true",
+        help="Fail closed on unsupported layers or implicit dtype fallback.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output.",
@@ -72,6 +77,7 @@ def main() -> None:
         output_dir,
         precision=args.precision,
         copy_graph=not args.no_copy_graph,
+        strict=args.official,
     )
     if analysis is None:
         print("❌ Analysis failed.")
@@ -91,4 +97,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

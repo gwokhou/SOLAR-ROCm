@@ -33,3 +33,7 @@ __all__ = [
     "EinsumGraphAnalyzer",
     "ModelAnalyzer",
 ]
+from solar.analysis.fusion import FusionPlanner
+from solar.analysis.orojenesis import OrojenesisError, OrojenesisRunner
+
+__all__ = ["FusionPlanner", "OrojenesisError", "OrojenesisRunner"]

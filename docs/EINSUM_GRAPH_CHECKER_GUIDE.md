@@ -341,6 +341,6 @@ Validate a graph from a YAML file.
 
 ## See Also
 
-- `solar/solar/einsum/pytorch_to_einsum.py` - Graph generation
-- `solar/EINSUM_GUIDE.md` - Einsum equation conventions
-- `solar/SOL_Guide.md` - Performance analysis models
+- `solar/einsum/pytorch_to_einsum.py` - Graph generation
+- [`EINSUM_GUIDE.md`](EINSUM_GUIDE.md) - Einsum equation conventions
+- `docs/SOL_GUIDE.md` - Performance analysis models

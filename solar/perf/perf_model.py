@@ -19,10 +19,11 @@ This module implements the **third stage** of the Solar pipeline:
 
   `analysis.yaml` + `configs/arch/<ARCH>.yaml`  ->  `perf_<ARCH>.yaml`
 
-Three SOL (Speed-of-Light) roofline models are computed:
-1. Unfused: Each op runs in isolation, all tensors from DRAM
-2. Fused: Per-op roofline, intermediate tensors excluded from memory cost
-3. Fused+Prefetched: Single roofline for entire graph, perfect overlap assumed
+Three SOL (Speed-of-Light) traffic scenarios are computed with a whole-graph
+roofline:
+1. Unfused: all operation tensor traffic is charged to DRAM
+2. Fused: only deduplicated model-boundary I/O is charged to DRAM
+3. Fused+Prefetched: retained compatibility view of the same deduplicated I/O
 
 See SOL_GUIDE.md for detailed explanation.
 """
@@ -38,17 +39,16 @@ from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.utils import ensure_directory, NoAliasDumper
 from solar.rocm import ArchitectureProfile
 
-
 PathLike = Union[str, Path]
 
 
 class EinsumGraphPerfModel:
     """Compute SOL-style roofline predictions from `analysis.yaml`.
-    
-    Computes three performance models:
-    - unfused: Each operation's roofline computed independently, summed
-    - fused: Per-op roofline with intermediate tensors excluded
-    - fused_prefetched: Single roofline for entire graph (best case)
+
+    Computes three whole-graph roofline traffic scenarios:
+    - unfused: all operation tensor traffic
+    - fused: deduplicated model-boundary I/O
+    - fused_prefetched: compatibility view of the fused traffic total
     """
 
     def __init__(self, debug: bool = False) -> None:
@@ -113,28 +113,32 @@ class EinsumGraphPerfModel:
             "float16": "fp16",
             "half": "fp16",
             "bfloat16": "bf16",
+            "float8": "fp8",
         }.get(precision.lower(), precision.lower())
-        if arch.get("gfx_target") and "peak_ops_per_second" in arch:
-            if normalized_precision == "nvfp4":
-                raise ValueError("NVFP4 is unsupported on the gfx1200 ROCm target")
-            if normalized_precision not in arch["peak_ops_per_second"]:
-                raise ValueError(
-                    f"Precision {precision!r} is unsupported by {arch_name}"
-                )
+        normalized_precision = arch.get("precision_aliases", {}).get(
+            normalized_precision, normalized_precision
+        )
+        if normalized_precision not in arch.get("peak_ops_per_second", {}):
+            raise ValueError(
+                f"Precision {normalized_precision.upper()!r} is unsupported "
+                f"by {arch_name}"
+            )
 
         # Check for quantization metadata (e.g., nvfp4/fp8 conversions)
-        quant_metadata = self._load_quant_metadata(analysis_path)
-        quant_mac_key = None
+        is_schema_v2 = int(analysis.get("schema_version", 1)) >= 2
+        quant_metadata = (
+            None if is_schema_v2 else self._load_quant_metadata(analysis_path)
+        )
+        quant_precision = None
         quant_bpe = None
         quant_label = None
         if quant_metadata:
-            quant_mac_key, quant_bpe, quant_label = self._resolve_quant_overrides(
-                quant_metadata, arch, precision
+            quant_precision, quant_bpe, quant_label = self._resolve_quant_overrides(
+                quant_metadata, arch
             )
 
         total = analysis.get("total") or {}
-        metadata = analysis.get("metadata") or {}
-        
+
         # Get bytes_per_element: quant override > precision flag > metadata > default
         # The precision flag takes priority over analysis metadata because the user
         # may run perf with a different precision than the analysis was generated with.
@@ -144,15 +148,33 @@ class EinsumGraphPerfModel:
             bytes_per_element = BYTES_PER_ELEMENT[normalized_precision]
         else:
             raise ValueError(f"Unknown storage width for precision {precision!r}")
-        
+
         total_macs = float(total.get("macs", 0))
         total_flops = float(total.get("flops", 0))
-        
-        # Parse elements from new format, with fallback to old bytes format
-        # New format uses unfused_elements, old format uses orojenesis_elements or _bytes suffix
+
+        # Schema v2 carries exact per-tensor byte totals. Elements remain in
+        # the artifact for diagnostics only and must not drive mixed-dtype SOL.
+        has_exact_bytes = "unfused_bytes" in total and "fused_bytes" in total
         unfused_val = total.get("unfused_elements") or total.get("orojenesis_elements")
-        if unfused_val is not None:
-            # New format: elements
+        if has_exact_bytes:
+            total_orojenesis_bytes = float(total["unfused_bytes"])
+            total_fused_bytes = float(total["fused_bytes"])
+            total_fused_prefetched_bytes = float(
+                total.get("fused_prefetched_bytes", total_fused_bytes)
+            )
+            total_weight_bytes = float(total.get("weight_bytes", 0))
+            total_model_io_bytes = float(total.get("model_io_bytes", 0))
+            total_intermediate_bytes = float(total.get("intermediate_bytes", 0))
+            total_orojenesis_elems = float(unfused_val or 0)
+            total_fused_elems = float(total.get("fused_elements", 0))
+            total_fused_prefetched_elems = float(
+                total.get("fused_prefetched_elements", total_fused_elems)
+            )
+            total_weight_elems = float(total.get("weight_elements", 0))
+            total_model_io_elems = float(total.get("model_io_elements", 0))
+            total_intermediate_elems = float(total.get("intermediate_elements", 0))
+        elif unfused_val is not None:
+            # Schema v1 fallback: one global element width.
             total_orojenesis_elems = float(unfused_val)
             total_fused_elems = float(total.get("fused_elements", 0))
             total_fused_prefetched_elems = float(
@@ -161,11 +183,13 @@ class EinsumGraphPerfModel:
             total_weight_elems = float(total.get("weight_elements", 0))
             total_model_io_elems = float(total.get("model_io_elements", 0))
             total_intermediate_elems = float(total.get("intermediate_elements", 0))
-            
+
             # Convert elements to bytes
             total_orojenesis_bytes = total_orojenesis_elems * bytes_per_element
             total_fused_bytes = total_fused_elems * bytes_per_element
-            total_fused_prefetched_bytes = total_fused_prefetched_elems * bytes_per_element
+            total_fused_prefetched_bytes = (
+                total_fused_prefetched_elems * bytes_per_element
+            )
             total_weight_bytes = total_weight_elems * bytes_per_element
             total_model_io_bytes = total_model_io_elems * bytes_per_element
             total_intermediate_bytes = total_intermediate_elems * bytes_per_element
@@ -179,50 +203,77 @@ class EinsumGraphPerfModel:
             total_weight_bytes = float(total.get("weight_bytes", 0))
             total_model_io_bytes = float(total.get("model_io_bytes", 0))
             total_intermediate_bytes = float(total.get("intermediate_bytes", 0))
-            
+
             # Convert bytes to elements
             total_orojenesis_elems = total_orojenesis_bytes / bytes_per_element
             total_fused_elems = total_fused_bytes / bytes_per_element
-            total_fused_prefetched_elems = total_fused_prefetched_bytes / bytes_per_element
+            total_fused_prefetched_elems = (
+                total_fused_prefetched_bytes / bytes_per_element
+            )
             total_weight_elems = total_weight_bytes / bytes_per_element
             total_model_io_elems = total_model_io_bytes / bytes_per_element
             total_intermediate_elems = total_intermediate_bytes / bytes_per_element
 
-        freq_ghz = float(arch.get("freq_GHz", 1.0))
-        dram_bw = float(arch.get("DRAM_byte_per_cycle", 1.0))
+        clock_hz = float(arch.get("clock_hz") or 1e9)
+        freq_ghz = clock_hz / 1e9
+        memory_bandwidth = float(arch["memory_bandwidth_bytes_per_second"])
+        dram_bytes_per_cycle = memory_bandwidth / clock_hz
 
-        # MAC throughput: quant override takes priority over precision flag
-        if quant_mac_key:
-            mac_key = quant_mac_key
+        macs_by_precision = {
+            str(key).lower(): float(value)
+            for key, value in (total.get("macs_by_precision") or {}).items()
+            if float(value) != 0
+        }
+        if not macs_by_precision:
+            throughput_precision = quant_precision or normalized_precision
+            macs_by_precision = {throughput_precision: total_macs}
         else:
-            mac_key = f"ops_per_cycle_{normalized_precision}_matrix"
-        mac_per_cycle = arch.get(mac_key)
-        if mac_per_cycle is None:
-            raise ValueError(
-                f"Architecture profile does not define throughput for {precision!r}"
+            throughput_precision = (
+                next(iter(macs_by_precision))
+                if len(macs_by_precision) == 1
+                else "mixed"
             )
 
-        mac_per_cycle = float(mac_per_cycle)
+        compute_cycles_by_precision: Dict[str, float] = {}
+        for compute_precision, macs in macs_by_precision.items():
+            peak = arch["peak_ops_per_second"].get(compute_precision)
+            if peak is None:
+                raise ValueError(
+                    "Architecture profile does not define throughput for "
+                    f"artifact precision {compute_precision!r}"
+                )
+            compute_cycles_by_precision[compute_precision] = macs / (
+                float(peak) / (2.0 * clock_hz)
+            )
+        primary_precision = next(iter(macs_by_precision), normalized_precision)
+        primary_peak = arch["peak_ops_per_second"].get(primary_precision)
+        mac_per_cycle = float(primary_peak) / (2.0 * clock_hz) if primary_peak else 0.0
 
         total_other_ops = float(total.get("other_ops", 0))
-        scalar_ops_per_cycle = float(arch.get("ops_per_cycle_fp32_scalar", 0))
+        scalar_ops_per_cycle = float(arch["peak_ops_per_second"].get("fp32", 0)) / (
+            2.0 * clock_hz
+        )
 
         # Matrix-operation cycles (matmul/conv MACs).
-        compute_matrix_cycles = total_macs / mac_per_cycle if mac_per_cycle > 0 else 0.0
+        compute_matrix_cycles = sum(compute_cycles_by_precision.values())
         # Vector cycles (elementwise / reduction ops on scalar/vector ALUs).
         # NOTE: Disabled for SOL computation.  Elementwise/reshape ops are
         # memory-bound in practice — their cost is already captured by
         # fused_memory_cycles.  Including scalar cycles here would double-count
         # and inflate SOL by 10-34,000x for elementwise-heavy kernels.
         # Scalar/vector cycle stats are still reported for informational purposes.
-        compute_scalar_cycles = total_other_ops / scalar_ops_per_cycle if scalar_ops_per_cycle > 0 else 0.0
+        compute_scalar_cycles = (
+            total_other_ops / scalar_ops_per_cycle if scalar_ops_per_cycle > 0 else 0.0
+        )
         # SOL compute = matrix/contracted-operation cycles only.
         compute_cycles = compute_matrix_cycles
-        
+
         # Memory cycles for each model (using bytes)
-        unfused_mem_cycles = total_orojenesis_bytes / dram_bw if dram_bw > 0 else 0.0
-        fused_mem_cycles = total_fused_bytes / dram_bw if dram_bw > 0 else 0.0
-        fused_prefetched_mem_cycles = total_fused_prefetched_bytes / dram_bw if dram_bw > 0 else 0.0
+        unfused_mem_cycles = total_orojenesis_bytes / dram_bytes_per_cycle
+        fused_mem_cycles = total_fused_bytes / dram_bytes_per_cycle
+        fused_prefetched_mem_cycles = (
+            total_fused_prefetched_bytes / dram_bytes_per_cycle
+        )
 
         # Total cycles (roofline: max of compute and memory)
         unfused_total_cycles = max(compute_cycles, unfused_mem_cycles)
@@ -230,24 +281,36 @@ class EinsumGraphPerfModel:
         fused_prefetched_total_cycles = max(compute_cycles, fused_prefetched_mem_cycles)
 
         # Calculate arithmetic intensity for each model (MACs / bytes)
-        unfused_ai = total_macs / total_orojenesis_bytes if total_orojenesis_bytes > 0 else float('inf')
-        fused_ai = total_macs / total_fused_bytes if total_fused_bytes > 0 else float('inf')
-        fused_prefetched_ai = total_macs / total_fused_prefetched_bytes if total_fused_prefetched_bytes > 0 else float('inf')
+        unfused_ai = (
+            total_macs / total_orojenesis_bytes
+            if total_orojenesis_bytes > 0
+            else float("inf")
+        )
+        fused_ai = (
+            total_macs / total_fused_bytes if total_fused_bytes > 0 else float("inf")
+        )
+        fused_prefetched_ai = (
+            total_macs / total_fused_prefetched_bytes
+            if total_fused_prefetched_bytes > 0
+            else float("inf")
+        )
 
         # Ridge point: where compute-bound meets memory-bound
-        ridge_point = mac_per_cycle / dram_bw if dram_bw > 0 else 0.0
+        ridge_point = mac_per_cycle / dram_bytes_per_cycle
 
         perf: Dict[str, Any] = {
             "model": {
                 "formula": "max(total_flops / peak_ops_per_second, fused_bytes / memory_bandwidth_bytes_per_second)",
                 "precision": precision,
-                "rocm_native": True,
+                "rocm_native": str(arch.get("vendor", "")).upper() == "AMD",
             },
             "arch": {
                 "name": arch_name,
+                "vendor": arch.get("vendor"),
+                "gfx_target": arch.get("gfx_target") or None,
                 "clock_hz": freq_ghz * 1e9,
-                "memory_bandwidth_bytes_per_second": dram_bw * freq_ghz * 1e9,
-                "throughput_precision": mac_key.removeprefix("ops_per_cycle_").removesuffix("_matrix"),
+                "memory_bandwidth_bytes_per_second": memory_bandwidth,
+                "throughput_precision": throughput_precision,
                 "operations_per_cycle": mac_per_cycle,
                 "scalar_operations_per_cycle": scalar_ops_per_cycle,
                 "peak_ops_per_second": dict(arch["peak_ops_per_second"]),
@@ -255,13 +318,23 @@ class EinsumGraphPerfModel:
             },
             "workload": {
                 "total_macs": int(total_macs),
+                "macs_by_precision": {
+                    key: int(value) for key, value in macs_by_precision.items()
+                },
+                "compute_cycles_by_precision": {
+                    key: int(value)
+                    for key, value in compute_cycles_by_precision.items()
+                },
                 "total_other_ops": int(total_other_ops),
                 "total_flops": int(total_flops),
                 "bytes_per_element": bytes_per_element,
+                "memory_accounting": (
+                    "per_tensor_dtype" if has_exact_bytes else "legacy_global_dtype"
+                ),
                 **({"quant_orig_dtype": quant_label} if quant_label else {}),
             },
             "unfused": {
-                "description": "Each op in isolation, all tensors from DRAM",
+                "description": "Whole-graph roofline with all operation tensor traffic from DRAM",
                 "memory_elements": int(total_orojenesis_elems),
                 "memory_bytes": int(total_orojenesis_bytes),
                 "compute_matrix_cycles": int(compute_matrix_cycles),
@@ -269,12 +342,16 @@ class EinsumGraphPerfModel:
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(unfused_mem_cycles),
                 "total_cycles": int(unfused_total_cycles),
-                "runtime_ms": unfused_total_cycles / (freq_ghz * 1e6) if freq_ghz > 0 else 0.0,
+                "runtime_ms": (
+                    unfused_total_cycles / (freq_ghz * 1e6) if freq_ghz > 0 else 0.0
+                ),
                 "arithmetic_intensity": unfused_ai,
-                "bottleneck": "compute" if compute_cycles >= unfused_mem_cycles else "memory",
+                "bottleneck": (
+                    "compute" if compute_cycles >= unfused_mem_cycles else "memory"
+                ),
             },
             "fused": {
-                "description": "Per-op roofline, intermediate tensors excluded",
+                "description": "Whole-graph roofline with deduplicated model-boundary I/O",
                 "memory_elements": int(total_fused_elems),
                 "memory_bytes": int(total_fused_bytes),
                 "compute_matrix_cycles": int(compute_matrix_cycles),
@@ -282,12 +359,16 @@ class EinsumGraphPerfModel:
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(fused_mem_cycles),
                 "total_cycles": int(fused_total_cycles),
-                "runtime_ms": fused_total_cycles / (freq_ghz * 1e6) if freq_ghz > 0 else 0.0,
+                "runtime_ms": (
+                    fused_total_cycles / (freq_ghz * 1e6) if freq_ghz > 0 else 0.0
+                ),
                 "arithmetic_intensity": fused_ai,
-                "bottleneck": "compute" if compute_cycles >= fused_mem_cycles else "memory",
+                "bottleneck": (
+                    "compute" if compute_cycles >= fused_mem_cycles else "memory"
+                ),
             },
             "fused_prefetched": {
-                "description": "Single roofline for entire graph, perfect overlap",
+                "description": "Compatibility view of the fused whole-graph roofline",
                 "memory_elements": int(total_fused_prefetched_elems),
                 "memory_bytes": int(total_fused_prefetched_bytes),
                 "compute_matrix_cycles": int(compute_matrix_cycles),
@@ -295,9 +376,17 @@ class EinsumGraphPerfModel:
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(fused_prefetched_mem_cycles),
                 "total_cycles": int(fused_prefetched_total_cycles),
-                "runtime_ms": fused_prefetched_total_cycles / (freq_ghz * 1e6) if freq_ghz > 0 else 0.0,
+                "runtime_ms": (
+                    fused_prefetched_total_cycles / (freq_ghz * 1e6)
+                    if freq_ghz > 0
+                    else 0.0
+                ),
                 "arithmetic_intensity": fused_prefetched_ai,
-                "bottleneck": "compute" if compute_cycles >= fused_prefetched_mem_cycles else "memory",
+                "bottleneck": (
+                    "compute"
+                    if compute_cycles >= fused_prefetched_mem_cycles
+                    else "memory"
+                ),
             },
             "memory_breakdown": {
                 "weight_elements": int(total_weight_elems),
@@ -308,19 +397,41 @@ class EinsumGraphPerfModel:
                 "intermediate_bytes": int(total_intermediate_bytes),
             },
             "speedup": {
-                "fused_vs_unfused": (unfused_total_cycles / fused_total_cycles) if fused_total_cycles > 0 else 1.0,
-                "fused_prefetched_vs_unfused": (unfused_total_cycles / fused_prefetched_total_cycles) if fused_prefetched_total_cycles > 0 else 1.0,
-                "fused_prefetched_vs_fused": (fused_total_cycles / fused_prefetched_total_cycles) if fused_prefetched_total_cycles > 0 else 1.0,
+                "fused_vs_unfused": (
+                    (unfused_total_cycles / fused_total_cycles)
+                    if fused_total_cycles > 0
+                    else 1.0
+                ),
+                "fused_prefetched_vs_unfused": (
+                    (unfused_total_cycles / fused_prefetched_total_cycles)
+                    if fused_prefetched_total_cycles > 0
+                    else 1.0
+                ),
+                "fused_prefetched_vs_fused": (
+                    (fused_total_cycles / fused_prefetched_total_cycles)
+                    if fused_prefetched_total_cycles > 0
+                    else 1.0
+                ),
             },
             "memory_reduction": {
-                "fused_vs_unfused": 1.0 - (total_fused_bytes / total_orojenesis_bytes) if total_orojenesis_bytes > 0 else 0.0,
-                "fused_prefetched_vs_unfused": 1.0 - (total_fused_prefetched_bytes / total_orojenesis_bytes) if total_orojenesis_bytes > 0 else 0.0,
+                "fused_vs_unfused": (
+                    1.0 - (total_fused_bytes / total_orojenesis_bytes)
+                    if total_orojenesis_bytes > 0
+                    else 0.0
+                ),
+                "fused_prefetched_vs_unfused": (
+                    1.0 - (total_fused_prefetched_bytes / total_orojenesis_bytes)
+                    if total_orojenesis_bytes > 0
+                    else 0.0
+                ),
             },
         }
 
         out_path = out_dir / f"perf_{arch_name}.yaml"
         with open(out_path, "w") as f:
-            yaml.dump(perf, f, Dumper=NoAliasDumper, sort_keys=False, default_flow_style=False)
+            yaml.dump(
+                perf, f, Dumper=NoAliasDumper, sort_keys=False, default_flow_style=False
+            )
 
         if self.debug:
             print(f"✅ Wrote perf: {out_path}")
@@ -331,17 +442,15 @@ class EinsumGraphPerfModel:
     _QUANT_DTYPE_MAP = {
         "nvfp4": ("nvfp4", 0.5),
         "float4_e2m1fn_x2": ("nvfp4", 0.5),
-        "fp4": ("nvfp4", 0.5),
+        "float8_e4m3fnuz": ("float8_e4m3fnuz", 1),
+        "float8_e5m2fnuz": ("float8_e5m2fnuz", 1),
+        "float8_e4m3fn": ("float8_e4m3fn", 1),
+        "float8_e5m2": ("float8_e5m2", 1),
         "fp8": ("fp8", 1),
-        "float8_e4m3fn": ("fp8", 1),
-        "float8_e5m2": ("fp8", 1),
-        "float8_e4m3fnuz": ("fp8", 1),
-        "float8_e5m2fnuz": ("fp8", 1),
+        "fp4": ("fp4", 0.5),
     }
 
-    def _load_quant_metadata(
-        self, analysis_path: Path
-    ) -> Optional[Dict[str, Any]]:
+    def _load_quant_metadata(self, analysis_path: Path) -> Optional[Dict[str, Any]]:
         """Search for metadata.yaml near the analysis path.
 
         Typical layout::
@@ -368,13 +477,12 @@ class EinsumGraphPerfModel:
         self,
         metadata: Dict[str, Any],
         arch: Dict[str, Any],
-        precision: str,
     ) -> tuple:
-        """Derive MAC key and bytes_per_element from quantization metadata.
+        """Derive throughput precision and storage width from quant metadata.
 
         Scans ``dtype_conversions`` for the *highest-throughput* original
         quantized dtype (nvfp4 > fp8).  Returns the corresponding
-        ``(operations_per_cycle_key, bytes_per_element, orig_dtype_label)`` or
+        ``(throughput_precision, bytes_per_element, orig_dtype_label)`` or
         ``(None, None, None)`` if no quantized dtypes are found.
         """
         conversions = metadata.get("dtype_conversions") or []
@@ -390,7 +498,7 @@ class EinsumGraphPerfModel:
             orig = str(conv.get("orig_dtypes", "")).lower()
             for keyword, (prec, bpe) in self._QUANT_DTYPE_MAP.items():
                 if keyword in orig:
-                    if best_precision is None or bpe < best_bpe:
+                    if best_precision is None or best_bpe is None or bpe < best_bpe:
                         best_precision = prec
                         best_bpe = bpe
                         best_label = orig
@@ -399,22 +507,22 @@ class EinsumGraphPerfModel:
         if best_precision is None:
             return None, None, None
 
-        if best_precision == "nvfp4" and str(arch.get("gfx_target", "")).startswith(
-            "gfx"
-        ):
-            raise ValueError("NVFP4 metadata is unsupported on the gfx1200 ROCm target")
-
-        mac_key = f"ops_per_cycle_{best_precision}_matrix"
-        if mac_key not in arch:
-            if self.debug:
-                print(f"Debug: arch config missing {mac_key}, falling back to precision={precision}")
-            return None, None, None
+        throughput_precision = arch.get("precision_aliases", {}).get(
+            best_precision, best_precision
+        )
+        if throughput_precision not in arch.get("peak_ops_per_second", {}):
+            arch_name = str(arch.get("name", "this architecture"))
+            raise ValueError(
+                f"{best_precision.upper()} metadata is unsupported by {arch_name}"
+            )
 
         if self.debug:
-            print(f"  Quant override: orig_dtype={best_label} -> "
-                  f"mac_key={mac_key}, bytes_per_element={best_bpe}")
+            print(
+                f"  Quant override: orig_dtype={best_label} -> "
+                f"precision={throughput_precision}, bytes_per_element={best_bpe}"
+            )
 
-        return mac_key, best_bpe, best_label
+        return throughput_precision, best_bpe, best_label
 
     def _load_arch_config(self, arch_config: str) -> Dict[str, Any]:
         """Load an architecture YAML by name or path."""
@@ -426,23 +534,8 @@ class EinsumGraphPerfModel:
 
     @staticmethod
     def _normalize_arch_config(profile: ArchitectureProfile) -> Dict[str, Any]:
-        """Expose a normalized ROCm profile to the cycle-based calculation core."""
-        frequency = profile.clock_hz or 1e9
-        adapted = profile.to_dict()
-        adapted["freq_GHz"] = frequency / 1e9
-        adapted["DRAM_capacity"] = profile.memory_capacity_bytes
-        adapted["DRAM_byte_per_cycle"] = (
-            profile.memory_bandwidth_bytes_per_second / frequency
-        )
-        adapted["SRAM_capacity"] = profile.last_level_cache_bytes
-        for precision, ops in profile.peak_ops_per_second.items():
-            adapted[f"ops_per_cycle_{precision}_matrix"] = ops / (2.0 * frequency)
-        adapted["ops_per_cycle_fp32_scalar"] = profile.peak_ops_per_second.get(
-            "fp32", 0
-        ) / (2.0 * frequency)
-        adapted["profile_source"] = profile.source
-        return adapted
+        """Expose the vendor-neutral per-second architecture schema."""
+        return profile.to_dict()
 
 
 __all__ = ["EinsumGraphPerfModel"]
-

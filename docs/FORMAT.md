@@ -159,7 +159,7 @@ Produced by `solar.analysis.graph_analyzer`.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `precision` | `str` | e.g. `fp16`, `fp32`, `nvfp4` |
+| `precision` | `str` | e.g. `fp16`, `fp32`, `bf16`, `fp8` |
 | `bytes_per_element` | `float` | Bytes per tensor element for this precision |
 | `source_graph` | `str` | Path to the einsum graph that was analyzed |
 
@@ -175,9 +175,9 @@ Produced by `solar.perf.perf_model`.
 |---------|-------------|
 | `arch` | Hardware config used |
 | `workload` | Model-level compute/memory summary |
-| `unfused` | Roofline: all ops in isolation |
-| `fused` | Roofline: intermediates excluded |
-| `fused_prefetched` | Roofline: single whole-graph pass |
+| `unfused` | Whole-graph roofline using all operation tensor traffic |
+| `fused` | Whole-graph roofline using deduplicated external I/O |
+| `fused_prefetched` | Compatibility view of the same fused whole-graph total |
 | `memory_breakdown` | Weight vs activation vs intermediate split |
 | `speedup` | Ratio between models |
 | `memory_reduction` | Fraction of memory saved by fusion |
@@ -187,6 +187,8 @@ Produced by `solar.perf.perf_model`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `str` | Architecture config name (for example `Radeon_RX_9060_XT`) |
+| `vendor` | `str` | Architecture vendor; bundled and accepted profiles use `AMD` |
+| `gfx_target` | `str` | AMD ROCm target, for example `gfx1200` |
 | `clock_hz` | `float` | Clock frequency in Hz |
 | `memory_bandwidth_bytes_per_second` | `float` | Published memory bandwidth |
 | `throughput_precision` | `str` | Precision used for matrix throughput |
@@ -215,9 +217,9 @@ Produced by `solar.perf.perf_model`.
 | `compute_matrix_cycles` | `int` | Matrix-operation cycles (informational) |
 | `compute_scalar_cycles` | `int` | Scalar/vector cycles (informational; not included in SOL) |
 | `compute_cycles` | `int` | Matrix-operation cycles used in SOL |
-| `memory_cycles` | `int` | `memory_bytes / DRAM_byte_per_cycle` |
+| `memory_cycles` | `int` | Memory time converted to diagnostic cycles using the normalized profile |
 | `total_cycles` | `int` | `max(compute_cycles, memory_cycles)` |
-| `runtime_ms` | `float` | `total_cycles / (freq_GHz * 1e6)` |
+| `runtime_ms` | `float` | `max(2 * total_macs / peak_ops_per_second, memory_bytes / memory_bandwidth_bytes_per_second) * 1000` |
 | `arithmetic_intensity` | `float` | `total_macs / memory_bytes` |
 | `bottleneck` | `str` | `"compute"` or `"memory"` |
 

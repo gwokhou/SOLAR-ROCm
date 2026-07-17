@@ -17,7 +17,14 @@ def _performance_levels(value: Any) -> list[str]:
     found: list[str] = []
     if isinstance(value, dict):
         for key, item in value.items():
-            if "performance" in str(key).lower() and "level" in str(key).lower():
+            # AMD-SMI has used both ``performance_level`` and ``perf_level``
+            # across releases.  Accept both spellings while keeping the
+            # recursive parser tolerant of the nested per-device JSON shape.
+            normalized_key = str(key).lower().replace("-", "_").replace(" ", "_")
+            if normalized_key in {"perf_level", "performance_level"} or (
+                "level" in normalized_key
+                and ("performance" in normalized_key or "perf" in normalized_key)
+            ):
                 found.append(str(item))
             found.extend(_performance_levels(item))
     elif isinstance(value, list):

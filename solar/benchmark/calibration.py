@@ -33,6 +33,8 @@ class RocmCalibrator:
         environment: RocmEnvironment | None = None,
     ):
         self.architecture = architecture or ArchitectureProfile.load("RX_9060_XT")
+        if self.architecture.vendor.upper() != "AMD":
+            raise ValueError("ROCm calibration requires an AMD profile")
         self.environment = environment
 
     def calibrate(
@@ -42,9 +44,13 @@ class RocmCalibrator:
         timing_profile: str = "standard",
     ) -> CalibrationArtifact:
         environment = self.environment or RocmEnvironment.detect()
-        if not environment.supported_target:
+        if (
+            not environment.supported_target
+            or environment.gfx_target != self.architecture.gfx_target
+        ):
             raise RuntimeError(
-                f"calibration requires gfx1200, got {environment.gfx_target}"
+                f"calibration requires {self.architecture.gfx_target}, "
+                f"got {environment.gfx_target}"
             )
         policy = TimingPolicy.for_name(timing_profile)
         throughput: dict[str, float] = {}

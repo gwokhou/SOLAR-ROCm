@@ -5,7 +5,7 @@
 
 SOLAR keeps the paper's published lower bound authoritative:
 
-`TSOL = max(total FLOPs / published peak throughput, fused bytes / published memory bandwidth)`
+`TSOL = max(Σp(2 × MACp / published peak throughputp), fused bytes / published memory bandwidth)`
 
 Calibration reports measured throughput separately as `calibrated_solar`; it
 never changes the formal denominator. A score is emitted only when correctness
@@ -19,16 +19,31 @@ passes, the baseline environment matches exactly, and AMD-SMI reports
 ## Package contracts
 
 `benchmark.yaml` defines a reference Python source with `get_inputs(workload,
-device)` and `run(*inputs)`, one or more workloads, FLOPs, fused bytes,
-tolerance, precision, and either `cold` or `application` cache behavior.
-The evaluator injects a changing integer `seed` into the workload mapping and
-runs three correctness seeds before timing.
+device)` and `run(*inputs)`, one or more workloads, tolerance, precision, and
+either `cold` or `application` cache behavior. Each workload must reference a
+schema-v2 `analysis.yaml` and its source `einsum_graph.yaml`, with SHA-256 for
+both. Manual workload-level FLOPs and fused-byte totals are rejected. The
+artifact contains per-tensor byte traffic and MAC totals grouped by actual
+operation precision; the evaluator records the artifact, graph, benchmark,
+reference, architecture, solution, and environment identities in the bound
+report chain. Loading a benchmark deterministically reruns the analyzer on the
+bound graph and compares FLOPs, fused bytes, and the precision breakdown. A
+schema-v2 benchmark is rejected if any traffic-bearing tensor lacks an explicit
+dtype; neighboring quantization sidecars cannot override the artifact.
+
+The evaluator injects changing integer seeds and runs ten fresh correctness
+rounds before timing. Timed calls receive non-repeating aligned tensor
+addresses; every timed output is checked after its device event, followed by
+ten fresh post-timing rounds.
+Input mutation, persistent monkey patches, and evaluator-visible worker threads
+are candidate failures.
 
 `solution.yaml` selects `pytorch`, `triton`, `hip_cpp`, `hipblas`, `miopen`,
-`ck`, or `rocwmma`; declares `gfx1200`; and lists relative source paths plus
+`ck`, or `rocwmma`; declares one or more `gfx*` targets; and lists relative source paths plus
 SHA-256. Python entry points use `file.py::function`. Native backends also
-provide an argv-style `compile.command`, with `{staging}` and `{gfx_target}`
-placeholders, and must produce one top-level Python extension `.so`.
+provide an argv-style `compile.command`, with `{python}`, `{staging}`, and
+`{gfx_target}` placeholders, and must produce one top-level Python extension
+`.so`. The detected target must match both `--arch-config` and the solution.
 
 `baseline.yaml` binds workload latency to exact benchmark, environment, timing,
 cache, gfx target, clock evidence, and baseline solution hashes. There is no
@@ -49,12 +64,14 @@ correctness, score, capabilities, and structured failure states.
 - `quick`: 25 ms warmup and 100 ms sampling. It cannot create a formal baseline
   or SOL Score.
 
-Cold-cache measurement touches at least twice the 4 MiB L2 before every timed
-call and disables batching so no call can reuse another call's cache state.
+Cold-cache measurement touches at least twice the larger of the profile's L2
+and last-level cache before every timed call. For the RX 9060 XT profile this
+means 64 MiB, covering its declared 32 MiB last-level cache. Cold-cache mode
+disables batching so no call can reuse another call's cache state. Evaluator
+timing also disables batching for application-cache runs because output
+validation and unique-address inputs are per invocation.
 Input construction and cache clearing are outside device-event intervals. Raw
-samples are retained without outlier deletion. Kernels faster than 1 ms use an
-adaptive blocked sample in application-cache mode and report both its batch
-size and normalized per-call latency. Run `rocprofv3` separately so profiler
+samples are retained without outlier deletion. Run `rocprofv3` separately so profiler
 overhead cannot contaminate score timing.
 
 ## Isolation and native libraries
@@ -66,3 +83,12 @@ directory. Entrypoints must name a declared staged source; static scanning adds
 defense in depth against process, network, and arbitrary file access.
 Missing hipBLAS, MIOpen, CK, or rocWMMA headers are reported as capability
 failures instead of falling back to another backend.
+
+## Included end-to-end examples
+
+`examples/rocm_matmul` contains hash-verified PyTorch, Triton, and HIP C++
+solutions for the same FP16 benchmark. The HIP manifest compiles a CPython
+extension with `{python}` and `{gfx_target}`; the loader imports native modules
+under their build artifact name so the exported `PyInit_*` symbol matches.
+These examples exercise correctness gating and device-event timing on a real
+ROCm device rather than only validating YAML contracts.

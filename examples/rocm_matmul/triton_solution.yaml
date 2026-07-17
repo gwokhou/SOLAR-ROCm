@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+name: triton_rocm_matmul
+backend: triton
+gfx_targets: [gfx1200]
+entry_point: triton_solution.py::run
+sources:
+  - path: triton_solution.py
+    sha256: da53389ceca7e301649b00e39314fcda1fea4c3bbf9eb41cd453aa6a5417588f

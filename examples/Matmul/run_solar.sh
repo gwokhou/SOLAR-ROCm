@@ -25,7 +25,7 @@ set -euo pipefail
 #   Unfused elems:  32,768      (8192 + 8192 + 16384)
 #
 # Outputs are written under:
-#   solar/examples/Matmul/output/{graph,einsum,analysis,perf,timeloop}
+#   examples/Matmul/output/{graph,einsum,analysis,perf,timeloop}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOLAR_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

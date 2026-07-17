@@ -10,7 +10,7 @@ set -euo pipefail
 #   Q, K, V projections -> QK attention scores -> softmax -> context -> output projection
 #
 # Outputs are written under:
-#   solar/examples/Attention/output/{graph,einsum,analysis,perf,timeloop}
+#   examples/Attention/output/{graph,einsum,analysis,perf,timeloop}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOLAR_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

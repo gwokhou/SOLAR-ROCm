@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
 # SPDX-License-Identifier: Apache-2.0
 
-"""Normalized ROCm architecture profiles used by SOL roofline calculations."""
+"""Normalized AMD ROCm architecture profiles used by SOL roofline calculations."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _PRECISION_ALIASES = {
 
 @dataclass(frozen=True)
 class ArchitectureProfile:
-    """Normalized hardware limits used by SOL roofline calculations."""
+    """Normalized AMD hardware limits used by SOL roofline calculations."""
 
     name: str
     vendor: str
@@ -34,12 +34,13 @@ class ArchitectureProfile:
     l2_bytes: int
     last_level_cache_bytes: int
     peak_ops_per_second: dict[str, float] = field(default_factory=dict)
+    precision_aliases: dict[str, str] = field(default_factory=dict)
     clock_hz: float | None = None
     source: str | None = None
 
     @classmethod
     def load(cls, value: str | Path | Mapping[str, Any]) -> "ArchitectureProfile":
-        """Load a normalized ROCm architecture description."""
+        """Load a normalized AMD ROCm architecture description."""
         if isinstance(value, Mapping):
             data = dict(value)
             source = None
@@ -59,50 +60,60 @@ class ArchitectureProfile:
                     raise FileNotFoundError(f"Architecture profile not found: {value}")
                 data = yaml.safe_load(resource.read_text()) or {}
                 source = str(resource)
-        if "peak_ops_per_second" in data:
-            profile = cls(
-                name=str(data["name"]),
-                vendor=str(data.get("vendor", "AMD")),
-                gfx_target=str(data.get("gfx_target", "")),
-                compute_units=int(data.get("compute_units", 0)),
-                memory_capacity_bytes=int(data.get("memory_capacity_bytes", 0)),
-                memory_bandwidth_bytes_per_second=float(
-                    data["memory_bandwidth_bytes_per_second"]
-                ),
-                l2_bytes=int(data.get("l2_bytes", 0)),
-                last_level_cache_bytes=int(data.get("last_level_cache_bytes", 0)),
-                peak_ops_per_second={
-                    str(k).lower(): float(v)
-                    for k, v in data["peak_ops_per_second"].items()
-                },
-                clock_hz=(float(data["clock_hz"]) if data.get("clock_hz") else None),
-                source=str(data.get("source") or source or "") or None,
+        if "peak_ops_per_second" not in data:
+            raise ValueError(
+                "ROCm architecture profiles must define normalized "
+                "peak_ops_per_second fields"
             )
-            profile.validate()
-            return profile
-        raise ValueError(
-            "architecture profiles must define normalized peak_ops_per_second and "
-            "memory_bandwidth_bytes_per_second fields"
+        profile = cls(
+            name=str(data["name"]),
+            vendor=str(data.get("vendor", "")),
+            gfx_target=str(data.get("gfx_target", "")),
+            compute_units=int(data.get("compute_units", 0)),
+            memory_capacity_bytes=int(data.get("memory_capacity_bytes", 0)),
+            memory_bandwidth_bytes_per_second=float(
+                data["memory_bandwidth_bytes_per_second"]
+            ),
+            l2_bytes=int(data.get("l2_bytes", 0)),
+            last_level_cache_bytes=int(data.get("last_level_cache_bytes", 0)),
+            peak_ops_per_second={
+                str(k).lower(): float(v) for k, v in data["peak_ops_per_second"].items()
+            },
+            precision_aliases={
+                str(k).lower(): str(v).lower()
+                for k, v in (data.get("precision_aliases") or {}).items()
+            },
+            clock_hz=(float(data["clock_hz"]) if data.get("clock_hz") else None),
+            source=str(data.get("source") or source or "") or None,
         )
+        profile.validate()
+        return profile
 
     def validate(self) -> None:
+        if not self.name:
+            raise ValueError("architecture name is required")
         if self.vendor.upper() != "AMD":
-            raise ValueError("SOLAR ROCm accepts AMD architecture profiles only")
+            raise ValueError("SOLAR-ROCm accepts AMD architecture profiles only")
         if self.memory_bandwidth_bytes_per_second <= 0:
             raise ValueError("memory bandwidth must be positive")
-        if not self.peak_ops_per_second:
-            raise ValueError("at least one peak throughput is required")
+        if not self.peak_ops_per_second or any(
+            value <= 0 for value in self.peak_ops_per_second.values()
+        ):
+            raise ValueError("at least one positive peak throughput is required")
 
     def peak_for(self, precision: str) -> float:
-        key = _PRECISION_ALIASES.get(precision.lower(), precision.lower())
-        if key == "nvfp4":
-            raise ValueError("NVFP4 is not supported by the gfx1200 ROCm profile")
+        key = self.normalize_precision(precision)
         try:
             return self.peak_ops_per_second[key]
         except KeyError as exc:
             raise ValueError(
                 f"Precision {precision!r} is not supported by {self.name}"
             ) from exc
+
+    def normalize_precision(self, precision: str) -> str:
+        """Resolve spelling and vendor-specific format aliases."""
+        key = _PRECISION_ALIASES.get(precision.lower(), precision.lower())
+        return self.precision_aliases.get(key, key)
 
     def theoretical_seconds(
         self, flops: float, fused_bytes: float, precision: str
@@ -112,6 +123,22 @@ class ArchitectureProfile:
             float(flops) / self.peak_for(precision),
             float(fused_bytes) / self.memory_bandwidth_bytes_per_second,
         )
+
+    def theoretical_seconds_by_precision(
+        self, macs_by_precision: Mapping[str, float], fused_bytes: float
+    ) -> float:
+        """Return SOL using the artifact's per-operation compute precisions."""
+        compute_seconds = sum(
+            2.0 * float(macs) / self.peak_for(precision)
+            for precision, macs in macs_by_precision.items()
+        )
+        memory_seconds = float(fused_bytes) / self.memory_bandwidth_bytes_per_second
+        return max(compute_seconds, memory_seconds)
+
+    @property
+    def cache_flush_bytes(self) -> int:
+        """Return the largest declared AMD cache that cold-cache timing must evict."""
+        return max(self.l2_bytes, self.last_level_cache_bytes)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +151,7 @@ class ArchitectureProfile:
             "l2_bytes": self.l2_bytes,
             "last_level_cache_bytes": self.last_level_cache_bytes,
             "peak_ops_per_second": dict(self.peak_ops_per_second),
+            "precision_aliases": dict(self.precision_aliases),
             "clock_hz": self.clock_hz,
             "source": self.source,
         }

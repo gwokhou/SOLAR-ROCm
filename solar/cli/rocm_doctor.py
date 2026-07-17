@@ -12,13 +12,18 @@ from solar.rocm import ArchitectureProfile, RocmEnvironment
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect SOLAR ROCm/gfx1200 readiness")
+    parser = argparse.ArgumentParser(description="Inspect SOLAR ROCm readiness")
+    parser.add_argument(
+        "--arch-config",
+        default="RX_9060_XT",
+        help="AMD architecture profile name or YAML path",
+    )
     parser.add_argument(
         "--json", action="store_true", help="emit machine-readable JSON"
     )
     args = parser.parse_args()
     environment = RocmEnvironment.detect()
-    profile = ArchitectureProfile.load("RX_9060_XT")
+    profile = ArchitectureProfile.load(args.arch_config)
     payload = {"environment": environment.to_dict(), "architecture": profile.to_dict()}
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -36,7 +41,11 @@ def main() -> None:
         for name, capability in sorted(environment.capabilities.items()):
             marker = "OK" if capability.available else "MISSING"
             print(f"[{marker}] {name}: {capability.detail}")
-    if not environment.supported_target:
+    if (
+        not environment.supported_target
+        or profile.vendor.upper() != "AMD"
+        or environment.gfx_target != profile.gfx_target
+    ):
         raise SystemExit(2)
 
 

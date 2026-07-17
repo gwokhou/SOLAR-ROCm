@@ -5,8 +5,6 @@
 
 This guide explains the three roofline-based performance models used in Solar for predicting DNN execution time.
 
-See also: [SOL_CONCURRENCY_AND_PDL.md](./SOL_CONCURRENCY_AND_PDL.md) for analysis of multi-stream and PDL implications.
-
 ## Overview
 
 Solar computes three SOL (Speed-of-Light) performance estimates based on the roofline model. Each model makes different assumptions about memory access patterns:
@@ -22,17 +20,21 @@ Solar computes three SOL (Speed-of-Light) performance estimates based on the roo
 ## Roofline Model Basics
 
 The roofline model predicts performance based on two hardware limits:
-- **Compute bound**: Limited by peak compute throughput (MACs/second)
+- **Compute bound**: Limited by published peak compute throughput (operations/second)
 - **Memory bound**: Limited by memory bandwidth (bytes/second)
 
 ```
-runtime_cycles = max(compute_cycles, memory_cycles)
+runtime_seconds = max(compute_seconds, memory_seconds)
 ```
 
 Where:
-- `compute_cycles = total_matrix_macs / matrix_operations_per_cycle`
-- `memory_cycles = total_memory_bytes / DRAM_byte_per_cycle`
+- `compute_seconds = 2 × total_matrix_macs / peak_operations_per_second`
+- `memory_seconds = total_memory_bytes / memory_bandwidth_bytes_per_second`
 - **Arithmetic Intensity** = total_macs / total_memory_bytes
+
+The YAML output also reports cycles for diagnostics. Solar derives those from
+the normalized AMD profile clock; the formal lower bound is the per-second
+equation above.
 
 ---
 
@@ -41,17 +43,19 @@ Where:
 ### Description
 All tensor accesses (inputs, weights, outputs) for every operation are assumed to come from DRAM. This produces the highest memory traffic estimate.
 
-### Memory Calculation ([`graph_analyzer.py` L338](../solar/analysis/graph_analyzer.py#L338))
+### Memory Calculation ([`graph_analyzer.py`](../solar/analysis/graph_analyzer.py))
 ```
 Per layer:  unfused_elements_i = input_elems_i + output_elems_i
 Total:      unfused_elements   = Σ_i unfused_elements_i
             unfused_bytes      = unfused_elements × bytes_per_element
 ```
 
-### Roofline Application ([`perf_model.py` L217](../solar/perf/perf_model.py#L217))
+### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
-unfused_total_cycles = max(compute_cycles, unfused_bytes / DRAM_byte_per_cycle)
-runtime_ms           = unfused_total_cycles / (freq_GHz × 1e6)
+unfused_runtime_ms = max(
+    2 × total_macs / peak_operations_per_second,
+    unfused_bytes / memory_bandwidth_bytes_per_second,
+) × 1000
 ```
 
 A single whole-graph roofline is applied to graph-level totals. Intermediate tensors are counted as DRAM traffic (read by consumer, written by producer).
@@ -77,22 +81,21 @@ Layer 3 (Linear): Read Input (from DRAM) + Weight, Write Output → DRAM
 ### Description
 Intermediate tensor accesses are **excluded** from memory cost. Only weights and model-boundary I/O (global inputs/outputs) are counted.
 
-### Memory Calculation ([`graph_analyzer.py` L340–383](../solar/analysis/graph_analyzer.py#L340-L383))
+### Memory Calculation ([`graph_analyzer.py`](../solar/analysis/graph_analyzer.py))
 ```
-Per layer:
-  external_input_elems_i = weight_elems + non-intermediate activation elems
-  model_output_elems_i   = output_elems if no downstream consumer, else 0
-  model_io_elems_i       = external_input_elems_i + model_output_elems_i
-  fused_elements_i       = model_io_elems_i
-
-Total:    fused_elements = Σ_i fused_elements_i
-          fused_bytes    = fused_elements × bytes_per_element
+Graph level:
+  external_inputs  = deduplicate(weight and model-input tensors)
+  external_outputs = deduplicate(outputs with no downstream consumer)
+  fused_elements   = Σ external_inputs + Σ external_outputs
+  fused_bytes      = fused_elements × bytes_per_element
 ```
 
-### Roofline Application ([`perf_model.py` L218](../solar/perf/perf_model.py#L218))
+### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
-fused_total_cycles = max(compute_cycles, fused_bytes / DRAM_byte_per_cycle)
-runtime_ms         = fused_total_cycles / (freq_GHz × 1e6)
+fused_runtime_ms = max(
+    2 × total_macs / peak_operations_per_second,
+    fused_bytes / memory_bandwidth_bytes_per_second,
+) × 1000
 ```
 
 A single whole-graph roofline is applied. Intermediate tensors are assumed to stay in cache/registers.
@@ -117,7 +120,7 @@ Layer 3 (Linear): Read Weight, Write Model_Output
 ### Description
 A **single roofline** is applied to the entire graph. Total compute and total memory accesses (weights + model I/O) are aggregated, assuming perfect overlap between compute and memory operations.
 
-### Memory Calculation ([`graph_analyzer.py` L423–431](../solar/analysis/graph_analyzer.py#L423-L431))
+### Memory Calculation ([`graph_analyzer.py`](../solar/analysis/graph_analyzer.py))
 ```
 fused_prefetched_elements = Σ_i model_io_elems_i
 fused_prefetched_bytes    = fused_prefetched_elements × bytes_per_element
@@ -125,10 +128,12 @@ fused_prefetched_bytes    = fused_prefetched_elements × bytes_per_element
 
 > **Note**: In the current implementation, `fused_prefetched_elements` is computed identically to `fused_elements` (both sum `model_io_elems` per layer). They produce the same result. See [Section 6](#6-known-implementation-gaps).
 
-### Roofline Application ([`perf_model.py` L219](../solar/perf/perf_model.py#L219))
+### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
-fused_prefetched_total_cycles = max(compute_cycles, fused_prefetched_bytes / DRAM_byte_per_cycle)
-runtime_ms                    = fused_prefetched_total_cycles / (freq_GHz × 1e6)
+fused_prefetched_runtime_ms = max(
+    2 × total_macs / peak_operations_per_second,
+    fused_prefetched_bytes / memory_bandwidth_bytes_per_second,
+) × 1000
 ```
 
 ### When to Use
@@ -234,13 +239,11 @@ Per-op-sum is always >= whole-graph roofline (`Σ max(c_i, m_i) >= max(Σ c_i, �
 
 ### Gap 2: Fused and fused_prefetched are identical
 
-Both compute `Σ model_io_elems` per layer:
-- `fused_elements`: accumulated via per-layer sum ([line 420](../solar/analysis/graph_analyzer.py#L420))
-- `fused_prefetched_elements`: accumulated via separate sum over the same field ([lines 427–431](../solar/analysis/graph_analyzer.py#L427-L431))
+Both fields are currently assigned the same deduplicated graph-level external
+I/O total. They therefore produce identical fused and fused-prefetched
+runtime/cycle estimates. The two keys remain separate for output-schema
+compatibility with the original pipeline.
 
-These always produce the same total, so fused and fused_prefetched runtime/cycles are identical.
-
-For discussion of multi-stream concurrency and PDL modeling implications, see [SOL_CONCURRENCY_AND_PDL.md](./SOL_CONCURRENCY_AND_PDL.md).
 
 ## Practical Guidance
 
@@ -250,8 +253,8 @@ For discussion of multi-stream concurrency and PDL modeling implications, see [S
    - Debugging memory bottlenecks
 
 2. **Use Fused** when:
-- Estimating performance with standard fusion (MIOpen, PyTorch compile, etc.)
-   - Intermediate tensors fit in L2 cache
+   - Estimating performance with standard fusion (MIOpen, PyTorch compile, etc.)
+   - Intermediate tensors fit in the relevant on-chip cache hierarchy
    - Most realistic estimate for modern GPUs
 
 3. **Use Fused+Prefetched** when:

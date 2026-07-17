@@ -32,9 +32,11 @@ class BackendAdapter:
             detail = capability.detail if capability else "not probed"
             raise BackendUnavailable(f"{self.name} unavailable: {detail}")
 
-    def load(self, solution: SolutionSpec, staging_root: Path) -> Callable[..., Any]:
+    def load(
+        self, solution: SolutionSpec, staging_root: Path, gfx_target: str
+    ) -> Callable[..., Any]:
         if self.native:
-            self._compile(solution, staging_root)
+            self._compile(solution, staging_root, gfx_target)
             modules = sorted(staging_root.glob("*.so"))
             if not modules:
                 raise RuntimeError(
@@ -49,7 +51,14 @@ class BackendAdapter:
                     f"solution entry point is outside staging: {source_name}"
                 )
         _, function_name = _parse_entry_point(solution.entry_point)
-        module_name = f"_solar_solution_{solution.raw_hash[:12]}"
+        # CPython extension modules export ``PyInit_<build_name>``.  Import a
+        # native artifact under the filename stem chosen by its build system;
+        # pure Python solutions can retain the hash-isolated module name.
+        module_name = (
+            entry_file.name.split(".", 1)[0]
+            if self.native
+            else f"_solar_solution_{solution.raw_hash[:12]}"
+        )
         spec = importlib.util.spec_from_file_location(module_name, entry_file)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"cannot load solution module: {entry_file}")
@@ -61,13 +70,15 @@ class BackendAdapter:
             raise TypeError(f"solution entry point is not callable: {function_name}")
         return function
 
-    def _compile(self, solution: SolutionSpec, staging_root: Path) -> None:
+    def _compile(
+        self, solution: SolutionSpec, staging_root: Path, gfx_target: str
+    ) -> None:
         if not solution.compile_command:
             raise BackendUnavailable(f"{self.name} requires compile.command")
         command = [
-            item.replace("{staging}", str(staging_root)).replace(
-                "{gfx_target}", "gfx1200"
-            )
+            item.replace("{staging}", str(staging_root))
+            .replace("{gfx_target}", gfx_target)
+            .replace("{python}", sys.executable)
             for item in solution.compile_command
         ]
         result = subprocess.run(

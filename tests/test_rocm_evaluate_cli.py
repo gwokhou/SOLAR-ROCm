@@ -27,11 +27,10 @@ def test_untrusted_no_lock_runs_without_requesting_clock_lock(monkeypatch, tmp_p
     def unexpected_clock_lock():
         raise AssertionError("explicit --no-lock-clocks must not acquire a clock lock")
 
-    command = None
+    command: list[str] = []
 
     def run(command_arg, check):
-        nonlocal command
-        command = command_arg
+        command.extend(command_arg)
         assert check is False
         return SimpleNamespace(returncode=0)
 
@@ -45,9 +44,26 @@ def test_untrusted_no_lock_runs_without_requesting_clock_lock(monkeypatch, tmp_p
         timing_profile="quick",
         no_lock_clocks=True,
         image="solar-rocm:7.2",
+        arch_config="RX_9060_XT",
     )
 
     assert evaluate_rocm._run_container(args) == 0
-    assert command is not None
+    assert command
     assert "--no-lock-clocks" in command
+    assert command[command.index("--arch-config") + 1] == "RX_9060_XT"
     assert f"{Path(source_root)}:/benchmark:ro" in command
+
+
+def test_report_exit_code_rejects_workload_level_failures():
+    for status in ("incorrect", "reward_hack", "runtime_error", "unstable_timing"):
+        report = SimpleNamespace(
+            failure=None, workloads=[SimpleNamespace(status=status)]
+        )
+        assert evaluate_rocm._report_exit_code(report) == 1
+
+
+def test_report_exit_code_accepts_successful_diagnostics():
+    report = SimpleNamespace(
+        failure=None, workloads=[SimpleNamespace(status="diagnostic")]
+    )
+    assert evaluate_rocm._report_exit_code(report) == 0

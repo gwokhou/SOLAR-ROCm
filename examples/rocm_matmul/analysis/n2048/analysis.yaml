@@ -1,0 +1,72 @@
+schema_version: 2
+layers:
+  matmul:
+    type: matmul
+    einsum_equation: MK,KN->MN
+    is_real_einsum: true
+    macs: 8589934592
+    other_ops: 0
+    flops: 17179869184
+    compute_precision: fp16
+    unfused_elements: 12582912
+    unfused_bytes: 25165824.0
+    orojenesis_elements: null
+    fused_elements: 12582912
+    fused_bytes: 25165824.0
+    tensor_shapes:
+      inputs: [[2048, 2048], [2048, 2048]]
+      outputs: [[2048, 2048]]
+    tensor_sizes:
+      inputs: [4194304, 4194304]
+      outputs: [4194304]
+    memory_elements:
+      inputs: [4194304, 4194304]
+      outputs: [4194304]
+    memory_bytes:
+      inputs: [8388608.0, 8388608.0]
+      outputs: [8388608.0]
+    tensor_dtypes:
+      inputs: [torch.float16, torch.float16]
+      outputs: [torch.float16]
+    tensor_types:
+      inputs: [input, input]
+      outputs: [output]
+    input_elements: 8388608
+    output_elements: 4194304
+    intermediate_elements: 0
+    intermediate_bytes: 0.0
+    model_io_elements: 12582912
+    model_io_bytes: 25165824.0
+    input_is_intermediate: false
+    output_is_intermediate: false
+    is_orphaned: false
+    connections:
+      inputs: [start_a, start_b]
+      outputs: []
+total:
+  num_layers: 1
+  num_start_nodes_filtered: 2
+  macs: 8589934592
+  other_ops: 0
+  flops: 17179869184
+  macs_by_precision: {fp16: 8589934592}
+  unfused_elements: 12582912
+  unfused_bytes: 25165824.0
+  orojenesis_elements: null
+  fused_elements: 12582912
+  fused_bytes: 25165824.0
+  fused_prefetched_elements: 12582912
+  fused_prefetched_bytes: 25165824.0
+  model_io_elements: 12582912
+  model_io_bytes: 25165824.0
+  intermediate_elements: 0
+  intermediate_bytes: 0.0
+  num_intermediate_tensors: 0
+  num_orphaned_layers: 0
+metadata:
+  precision: fp16
+  fallback_precision: fp16
+  bytes_per_element: 2
+  dtype_accounting: per_tensor
+  source_graph: examples/rocm_matmul/analysis/n2048/einsum_graph.yaml
+  source_graph_sha256: 84f377d6c35d763c66f00ced5c8f3733379f142744eecfbb69080a475210dc8a

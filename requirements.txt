@@ -4,8 +4,12 @@
 # Solar - All Dependencies
 # Install with: pip install -r requirements.txt
 
+# ROCm wheels are not published on the default PyPI index. Keep both official
+# PyTorch indexes here so the documented direct pip command is self-contained.
+--extra-index-url https://download.pytorch.org/whl/rocm7.2
+--extra-index-url https://download.pytorch.org/whl/
+
 # Core
-# Install Linux/x86_64 wheels from https://download.pytorch.org/whl/rocm7.2.
 torch==2.11.0+rocm7.2; sys_platform == 'linux' and platform_machine == 'x86_64'
 triton-rocm==3.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'
 networkx>=3.0

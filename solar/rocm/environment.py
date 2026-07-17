@@ -143,7 +143,13 @@ class RocmEnvironment:
 
     @property
     def supported_target(self) -> bool:
-        return self.gfx_target == "gfx1200"
+        """Whether a usable AMD GCN target was discovered."""
+        capability = self.capabilities.get("pytorch_rocm")
+        return bool(
+            self.gfx_target
+            and self.gfx_target.startswith("gfx")
+            and (capability is None or capability.available)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return json.loads(json.dumps(asdict(self)))

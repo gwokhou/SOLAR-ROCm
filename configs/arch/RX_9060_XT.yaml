@@ -19,4 +19,9 @@ peak_ops_per_second:
   fp8: 205000000000000
   int8: 205000000000000
   int4: 410000000000000
+# ROCm/PyTorch FNUZ spellings use the generic published FP8 roofline.
+# Non-ROCm FN formats are intentionally not aliased on this AMD profile.
+precision_aliases:
+  float8_e4m3fnuz: fp8
+  float8_e5m2fnuz: fp8
 source: https://www.amd.com/en/products/specifications/graphics.html

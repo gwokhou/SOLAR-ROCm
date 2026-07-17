@@ -5,9 +5,15 @@
 
 from solar.benchmark.calibration import CalibrationArtifact, RocmCalibrator
 from solar.benchmark.evaluator import EvaluationReport, RocmEvaluator
-from solar.benchmark.models import BaselineRegistry, BenchmarkSpec, SolutionSpec
+from solar.benchmark.models import (
+    AnalysisArtifact,
+    BaselineRegistry,
+    BenchmarkSpec,
+    SolutionSpec,
+)
 
 __all__ = [
+    "AnalysisArtifact",
     "BaselineRegistry",
     "BenchmarkSpec",
     "CalibrationArtifact",

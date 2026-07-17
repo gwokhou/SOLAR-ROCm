@@ -1,0 +1,72 @@
+schema_version: 2
+layers:
+  matmul:
+    type: matmul
+    einsum_equation: MK,KN->MN
+    is_real_einsum: true
+    macs: 1073741824
+    other_ops: 0
+    flops: 2147483648
+    compute_precision: fp16
+    unfused_elements: 3145728
+    unfused_bytes: 6291456.0
+    orojenesis_elements: null
+    fused_elements: 3145728
+    fused_bytes: 6291456.0
+    tensor_shapes:
+      inputs: [[1024, 1024], [1024, 1024]]
+      outputs: [[1024, 1024]]
+    tensor_sizes:
+      inputs: [1048576, 1048576]
+      outputs: [1048576]
+    memory_elements:
+      inputs: [1048576, 1048576]
+      outputs: [1048576]
+    memory_bytes:
+      inputs: [2097152.0, 2097152.0]
+      outputs: [2097152.0]
+    tensor_dtypes:
+      inputs: [torch.float16, torch.float16]
+      outputs: [torch.float16]
+    tensor_types:
+      inputs: [input, input]
+      outputs: [output]
+    input_elements: 2097152
+    output_elements: 1048576
+    intermediate_elements: 0
+    intermediate_bytes: 0.0
+    model_io_elements: 3145728
+    model_io_bytes: 6291456.0
+    input_is_intermediate: false
+    output_is_intermediate: false
+    is_orphaned: false
+    connections:
+      inputs: [start_a, start_b]
+      outputs: []
+total:
+  num_layers: 1
+  num_start_nodes_filtered: 2
+  macs: 1073741824
+  other_ops: 0
+  flops: 2147483648
+  macs_by_precision: {fp16: 1073741824}
+  unfused_elements: 3145728
+  unfused_bytes: 6291456.0
+  orojenesis_elements: null
+  fused_elements: 3145728
+  fused_bytes: 6291456.0
+  fused_prefetched_elements: 3145728
+  fused_prefetched_bytes: 6291456.0
+  model_io_elements: 3145728
+  model_io_bytes: 6291456.0
+  intermediate_elements: 0
+  intermediate_bytes: 0.0
+  num_intermediate_tensors: 0
+  num_orphaned_layers: 0
+metadata:
+  precision: fp16
+  fallback_precision: fp16
+  bytes_per_element: 2
+  dtype_accounting: per_tensor
+  source_graph: examples/rocm_matmul/analysis/n1024/einsum_graph.yaml
+  source_graph_sha256: 49b94e88e126338d88ff7b1e1c56c9d7e39101e175d768b8ee2d6b1615ace01c

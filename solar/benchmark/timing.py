@@ -137,13 +137,17 @@ class AdaptiveTimer:
         setup: Callable[[], tuple[Any, ...]] | None = None,
         clear_cache: Callable[[], None] | None = None,
         allow_batching: bool = True,
+        validate: Callable[[tuple[Any, ...], Any], None] | None = None,
     ) -> TimingStatistics:
         setup = setup or (lambda: ())
         clear_cache = clear_cache or (lambda: None)
 
         # Initialization/JIT is intentionally outside all timing budgets.
-        fn(*setup())
+        initial_args = setup()
+        initial_output = fn(*initial_args)
         self.clock.synchronize()
+        if validate is not None:
+            validate(initial_args, initial_output)
         warmup_calls = 0
         warmup_ms = 0.0
         last_elapsed_ms = 0.0
@@ -153,7 +157,15 @@ class AdaptiveTimer:
         ):
             clear_cache()
             args = setup()
-            elapsed = self.clock.measure(lambda: fn(*args))
+            output = None
+
+            def run_warmup() -> None:
+                nonlocal output
+                output = fn(*args)
+
+            elapsed = self.clock.measure(run_warmup)
+            if validate is not None:
+                validate(args, output)
             last_elapsed_ms = elapsed
             warmup_calls += 1
             warmup_ms += elapsed
@@ -165,11 +177,17 @@ class AdaptiveTimer:
         # sample is normalized back to per-call latency. Cold-cache mode keeps
         # batch_size at one so every call receives a fresh cache clear.
         batch_size = (
-            max(1, math.ceil(1.0 / max(last_elapsed_ms, 1e-9))) if allow_batching else 1
+            max(1, math.ceil(1.0 / max(last_elapsed_ms, 1e-9)))
+            if allow_batching and validate is None
+            else 1
         )
         windows: list[TimingStatistics] = []
         for _ in range(self.policy.windows):
-            windows.append(self._measure_window(fn, setup, clear_cache, batch_size))
+            windows.append(
+                self._measure_window(
+                    fn, setup, clear_cache, batch_size, validate=validate
+                )
+            )
         samples = [sample for window in windows for sample in window.samples_ms]
         result = summarize(samples, self.policy.stability_ratio)
         result = replace(
@@ -198,18 +216,23 @@ class AdaptiveTimer:
         setup: Callable[[], tuple[Any, ...]],
         clear_cache: Callable[[], None],
         batch_size: int,
+        validate: Callable[[tuple[Any, ...], Any], None] | None = None,
     ) -> TimingStatistics:
         samples: list[float] = []
         total_ms = 0.0
         while True:
             clear_cache()
             args = setup()
+            output = None
 
             def run_block() -> None:
+                nonlocal output
                 for _ in range(batch_size):
-                    fn(*args)
+                    output = fn(*args)
 
             block_elapsed = self.clock.measure(run_block)
+            if validate is not None:
+                validate(args, output)
             samples.append(block_elapsed / batch_size)
             total_ms += block_elapsed
             minimum_met = (
@@ -227,13 +250,13 @@ class AdaptiveTimer:
 
 
 class TorchCacheController:
-    """Cold-cache controller that touches twice the normalized L2 size."""
+    """Cold-cache controller that touches twice the last-level cache size."""
 
-    def __init__(self, l2_bytes: int, device: str = "cuda"):
+    def __init__(self, cache_bytes: int, device: str = "cuda"):
         import torch
 
         self._buffer = torch.empty(
-            max(2 * l2_bytes, 1), dtype=torch.int8, device=device
+            max(2 * cache_bytes, 1), dtype=torch.int8, device=device
         )
 
     def clear(self) -> None:

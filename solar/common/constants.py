@@ -30,45 +30,120 @@ DEFAULT_OUTPUT_DIR = "outputs"
 BYTES_PER_ELEMENT = {
     "fp32": 4,
     "tf32": 4,
-    "fp16": 2, 
+    "fp16": 2,
     "bf16": 2,
     "int8": 1,
     "int4": 0.5,
     "fp64": 8,
     "fp8": 1,
     "nvfp4": 0.5,
+    "int64": 8,
+    "int32": 4,
+    "int16": 2,
+    "uint8": 1,
+    "bool": 1,
 }
 
+_DTYPE_ALIASES = {
+    "double": "fp64",
+    "float64": "fp64",
+    "float": "fp32",
+    "float32": "fp32",
+    "single": "fp32",
+    "float16": "fp16",
+    "half": "fp16",
+    "bfloat16": "bf16",
+    "float8": "fp8",
+    "float8_e4m3fn": "fp8",
+    "float8_e4m3fnuz": "fp8",
+    "float8_e5m2": "fp8",
+    "float8_e5m2fnuz": "fp8",
+    "float4_e2m1fn_x2": "nvfp4",
+    "byte": "uint8",
+    "char": "int8",
+    "short": "int16",
+    "int": "int32",
+    "long": "int64",
+}
+
+
+def normalize_dtype(dtype: object, fallback: str | None = None) -> str:
+    """Normalize torch and YAML dtype spellings to SOLAR precision names."""
+    value = str(dtype or "").strip().lower()
+    if value.startswith("torch."):
+        value = value[6:]
+    value = _DTYPE_ALIASES.get(value, value)
+    if value in BYTES_PER_ELEMENT:
+        return value
+    if fallback is not None:
+        return normalize_dtype(fallback)
+    raise ValueError(f"Unknown tensor dtype {dtype!r}")
+
+
+def dtype_bytes(dtype: object, fallback: str | None = None) -> float:
+    """Return the storage width for one tensor element."""
+    return float(BYTES_PER_ELEMENT[normalize_dtype(dtype, fallback)])
+
+
 # Supported operations for einsum analysis
-SUPPORTED_OPERATIONS: FrozenSet[str] = frozenset({
-    # Matrix operations
-    "matmul", "bmm", "linear", "addmm",
-    
-    # Convolution operations
-    "conv1d", "conv2d", "conv3d",
-    "conv_transpose1d", "conv_transpose2d", "conv_transpose3d",
-    
-    # Attention operations
-    "scaled_dot_product_attention", "flex_attention",
-    
-    # Normalization operations
-    "batch_norm", "layer_norm", "group_norm", "instance_norm",
-    
-    # Reduction operations
-    "sum", "mean", "max", "min", "prod",
-    "torch.sum", "torch.mean", "torch.max", "torch.min", "torch.prod",
-    
-    # Elementwise operations
-    "add", "mul", "div", "sub", "pow",
-    "relu", "gelu", "sigmoid", "tanh", "softmax",
-    
-    # Pooling operations
-    "avg_pool1d", "avg_pool2d", "avg_pool3d",
-    "max_pool1d", "max_pool2d", "max_pool3d",
-    
-    # Other operations
-    "transpose", "reshape", "flatten", "view",
-})
+SUPPORTED_OPERATIONS: FrozenSet[str] = frozenset(
+    {
+        # Matrix operations
+        "matmul",
+        "bmm",
+        "linear",
+        "addmm",
+        # Convolution operations
+        "conv1d",
+        "conv2d",
+        "conv3d",
+        "conv_transpose1d",
+        "conv_transpose2d",
+        "conv_transpose3d",
+        # Attention operations
+        "scaled_dot_product_attention",
+        "flex_attention",
+        # Normalization operations
+        "batch_norm",
+        "layer_norm",
+        "group_norm",
+        "instance_norm",
+        # Reduction operations
+        "sum",
+        "mean",
+        "max",
+        "min",
+        "prod",
+        "torch.sum",
+        "torch.mean",
+        "torch.max",
+        "torch.min",
+        "torch.prod",
+        # Elementwise operations
+        "add",
+        "mul",
+        "div",
+        "sub",
+        "pow",
+        "relu",
+        "gelu",
+        "sigmoid",
+        "tanh",
+        "softmax",
+        # Pooling operations
+        "avg_pool1d",
+        "avg_pool2d",
+        "avg_pool3d",
+        "max_pool1d",
+        "max_pool2d",
+        "max_pool3d",
+        # Other operations
+        "transpose",
+        "reshape",
+        "flatten",
+        "view",
+    }
+)
 
 # Node type mappings for graph processing
 NODE_TYPE_MAPPINGS = {
@@ -94,27 +169,31 @@ MODULE_ATTR_NAMES = [
 ]
 
 # Geometric attributes for convolution operations
-GEOMETRIC_ATTRS = frozenset({
-    "kernel_size",
-    "stride", 
-    "padding",
-    "dilation",
-    "output_padding",
-    "normalized_shape",
-    "output_size",
-})
+GEOMETRIC_ATTRS = frozenset(
+    {
+        "kernel_size",
+        "stride",
+        "padding",
+        "dilation",
+        "output_padding",
+        "normalized_shape",
+        "output_size",
+    }
+)
 
 # Boolean attributes for modules
-BOOLEAN_ATTRS = frozenset({
-    "inplace",
-    "affine",
-    "elementwise_affine",
-    "track_running_stats",
-    "ceil_mode",
-    "count_include_pad",
-    "return_indices",
-    "sparse",
-})
+BOOLEAN_ATTRS = frozenset(
+    {
+        "inplace",
+        "affine",
+        "elementwise_affine",
+        "track_running_stats",
+        "ceil_mode",
+        "count_include_pad",
+        "return_indices",
+        "sparse",
+    }
+)
 
 # Environment variables for safe execution
 SAFE_ENV_VARS = {
@@ -123,6 +202,11 @@ SAFE_ENV_VARS = {
     "MKL_NUM_THREADS": "1",
     "OPENBLAS_VERBOSE": "0",
     "PYTORCH_DISABLE_CUDA": "1",
+    # Preserve the upstream CUDA guard and also hide HIP/HSA devices when
+    # graph extraction runs benchmark code in CPU/meta safe mode.
+    "CUDA_VISIBLE_DEVICES": "",
+    "HIP_VISIBLE_DEVICES": "",
+    "ROCR_VISIBLE_DEVICES": "",
     "USE_OPENMP": "0",
 }
 

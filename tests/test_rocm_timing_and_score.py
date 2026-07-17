@@ -3,10 +3,20 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
+from solar.benchmark import clock_lock
 from solar.benchmark.scoring import calculate_sol_score
-from solar.benchmark.timing import AdaptiveTimer, TimingPolicy, UnstableTimingError
+from solar.benchmark.timing import (
+    AdaptiveTimer,
+    TimingPolicy,
+    TorchCacheController,
+    UnstableTimingError,
+)
+from solar.benchmark.evaluator import _ShiftingInputPool
 
 
 class FakeClock:
@@ -110,9 +120,70 @@ def test_unstable_measurement_is_not_silently_filtered():
     assert len(caught.value.statistics.samples_ms) == 8
 
 
+def test_timer_validates_outputs_after_timed_device_work():
+    calls = 0
+
+    def stateful_candidate():
+        nonlocal calls
+        calls += 1
+        return 1 if calls <= 3 else 0
+
+    policy = TimingPolicy("test", 1, 1, 3, 3, 20, 20, None)
+
+    with pytest.raises(AssertionError, match="timed output"):
+        AdaptiveTimer(policy, FakeClock([1.0] * 20)).measure(
+            stateful_candidate,
+            validate=lambda _args, output: (
+                None
+                if output == 1
+                else (_ for _ in ()).throw(AssertionError("invalid timed output"))
+            ),
+        )
+
+
+def test_shifting_pool_never_reuses_tensor_addresses():
+    import torch
+
+    seed = 0
+
+    def factory():
+        nonlocal seed
+        seed += 1
+        return (torch.full((8,), seed, dtype=torch.float16),)
+
+    pool = _ShiftingInputPool(factory, max_calls=8)
+    pointers = []
+    for expected in range(1, 9):
+        args = pool.next()
+        pointers.append(args[0].data_ptr())
+        pristine = pool.take_pristine(args)
+        assert torch.equal(args[0], pristine[0])
+        assert args[0][0].item() == expected
+
+    assert len(pointers) == len(set(pointers))
+
+
 def test_sol_score_and_audit_bounds():
     assert calculate_sol_score(3.0, 2.0, 1.0) == pytest.approx(2.0 / 3.0)
     with pytest.raises(ValueError, match="baseline"):
         calculate_sol_score(1.0, 2.0, 1.0)
     with pytest.raises(ValueError, match="candidate"):
         calculate_sol_score(3.0, 0.5, 1.0)
+
+
+@pytest.mark.parametrize("field", ["perf_level", "performance_level"])
+def test_amd_smi_clock_level_json_variants(monkeypatch, field):
+    payload = {"gpu_data": [{"gpu": 0, field: "AMDSMI_DEV_PERF_LEVEL_AUTO"}]}
+    monkeypatch.setattr(clock_lock, "_amd_smi_executable", lambda: "amd-smi")
+    monkeypatch.setattr(
+        clock_lock.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(payload)),
+    )
+
+    assert clock_lock.query_clock_level() == ("AMDSMI_DEV_PERF_LEVEL_AUTO",)
+
+
+def test_cache_controller_evicts_twice_declared_last_level_cache():
+    controller = TorchCacheController(32, device="cpu")
+    assert controller._buffer.numel() == 64

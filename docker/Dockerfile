@@ -10,9 +10,9 @@ RUN test "$(dpkg --print-architecture)" = "amd64" || \
 ENV ROCM_PATH=/opt/rocm \
     HIP_PATH=/opt/rocm \
     HIP_PLATFORM=amd \
-    HSA_OVERRIDE_GFX_VERSION=12.0.0 \
     PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:/venv/bin:${PATH} \
     LD_LIBRARY_PATH=/opt/rocm/lib \
+    HOME=/home/solar \
     UV_PROJECT_ENVIRONMENT=/venv \
     UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1
@@ -27,8 +27,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.18 /uv /usr/local/bin/uv
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
-RUN groupadd --gid ${HOST_GID} solar || true && \
-    useradd --uid ${HOST_UID} --gid ${HOST_GID} --create-home --shell /bin/bash solar || true && \
+RUN groupadd --non-unique --gid ${HOST_GID} solar && \
+    useradd --non-unique --uid ${HOST_UID} --gid solar --create-home --shell /bin/bash solar && \
     mkdir -p /workspace /venv && chown -R ${HOST_UID}:${HOST_GID} /workspace /venv
 
 WORKDIR /workspace

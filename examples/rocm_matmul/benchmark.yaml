@@ -15,9 +15,15 @@ tolerance:
 workloads:
   - name: n1024
     parameters: {n: 1024}
-    flops: 2147483648
-    fused_bytes: 6291456
+    analysis:
+      path: analysis/n1024/analysis.yaml
+      sha256: a9e1dd8894bf61877e27ac506f3895e63f1816cbc18429698b1173616f3a719d
+      source_graph: analysis/n1024/einsum_graph.yaml
+      source_graph_sha256: 49b94e88e126338d88ff7b1e1c56c9d7e39101e175d768b8ee2d6b1615ace01c
   - name: n2048
     parameters: {n: 2048}
-    flops: 17179869184
-    fused_bytes: 25165824
+    analysis:
+      path: analysis/n2048/analysis.yaml
+      sha256: fda669a8625aaecca73bb503e424ed0608e24c8f1e6d5983bc9218bf463b115c
+      source_graph: analysis/n2048/einsum_graph.yaml
+      source_graph_sha256: 84f377d6c35d763c66f00ced5c8f3733379f142744eecfbb69080a475210dc8a

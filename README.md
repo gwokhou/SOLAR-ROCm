@@ -14,7 +14,7 @@ This ROCm port keeps the original five-stage analysis pipeline and adds an execu
 - **Einsum Conversion**: Convert PyTorch operations to einsum notation with automatic rank renaming
 - **Graph Visualization**: Generate PDF visualizations of einsum graphs
 - **Hardware-Independent Analysis**: Compute MACs, FLOPs, and memory footprints
-- **Performance Prediction**: Architecture-aware roofline modeling (H100, A6000, RX 9060 XT, etc.)
+- **Performance Prediction**: AMD ROCm architecture-aware roofline modeling (RX 9060 XT)
 - **Executable ROCm Evaluation**: Auditable PyTorch, Triton, HIP/C++, and AMD library kernel timing
 - **Timeloop / Orojenesis Export**: Convert to Timeloop workload format for architectural exploration
 - **Benchmark Support**: Native support for kernelbench benchmark suites
@@ -69,7 +69,7 @@ Solar includes several example models demonstrating different attention patterns
 
 ```bash
 # Run the complete pipeline for any example
-cd solar/examples/Attention
+cd examples/Attention
 bash run_solar.sh
 
 # Outputs:
@@ -133,6 +133,16 @@ solar-evaluate \
   --timing-profile quick --no-lock-clocks \
   --output evaluation.yaml
 ```
+
+The example package includes three verified solution manifests:
+
+- `solution.yaml`: PyTorch/ROCm
+- `triton_solution.yaml`: Triton/ROCm JIT kernel
+- `hip_solution.yaml`: HIP C++ extension compiled for the detected gfx target
+
+Replace the `--solution` value to exercise each backend. Native compilation
+accepts `{python}`, `{staging}`, and `{gfx_target}` placeholders in the solution
+manifest.
 
 ## Output File Formats
 
@@ -250,7 +260,7 @@ result = converter.convert(
 ## Architecture
 
 ```
-solar/
+SOLAR-ROCm/
 ├── solar/
 │   ├── common/        # Shared types, constants, utilities (NoAliasDumper)
 │   ├── graph/         # Stage 1: PyTorch graph extraction
@@ -259,8 +269,8 @@ solar/
 │   ├── perf/          # Stage 4: Performance prediction
 │   └── cli/           # Command-line interfaces
 ├── tests/             # Comprehensive test suite
-├── examples/          # Example models (Attention, BERT, sparse attention variants)
-└── configs/           # Architecture configs (H100_PCIe.yaml, A6000.yaml, RX_9060_XT.yaml)
+├── examples/          # Maintained pipeline and ROCm kernel examples
+└── configs/           # Normalized AMD ROCm architecture configs
 ```
 
 ## Key Components
@@ -291,10 +301,7 @@ solar/
 
 - [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md): Comprehensive testing documentation
 - [`docs/ROCM_BENCHMARKING.md`](docs/ROCM_BENCHMARKING.md): Executable ROCm benchmarking
-- `REFACTORING_SUMMARY.md`: Design decisions and refactoring history
-- `MIGRATION_COMPLETE.md`: Migration guide from legacy JSON format
 
 ## License
 
 Apache License 2.0
-

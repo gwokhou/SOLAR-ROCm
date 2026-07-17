@@ -43,9 +43,13 @@ tests/
 ├── test_graph_processing.py   # Stage 1: PyTorch graph extraction
 ├── test_einsum_analyzer.py    # Stage 2: Einsum conversion
 ├── test_model_analyzer.py     # Stages 3-4: Analysis + performance
+├── test_perf_quant.py         # ROCm precision/quantization rules
+├── test_rocm_architecture.py  # AMD profile validation and loading
+├── test_rocm_benchmark_models.py # ROCm benchmark YAML contracts
+├── test_rocm_timing_and_score.py # Timing, clocks, cache, and scoring
 ├── test_llm_agent.py          # LLM agent and node registry
 ├── test_standalone_bert.py    # Full pipeline on BERT example
-└── test_integration.py        # End-to-end benchmark tests
+└── test_integration.py        # End-to-end analysis pipeline tests
 ```
 
 ## Running Tests
@@ -53,10 +57,10 @@ tests/
 ### Quick Start
 
 ```bash
-# Run all tests (~4-5 minutes)
+# Run all tests (about 20 seconds on the validated host)
 bash scripts/run_tests.sh
 
-# Quick smoke tests (~1 minute)
+# Quick smoke tests
 bash scripts/run_tests.sh quick
 
 # Run unit tests only (no integration)
@@ -106,17 +110,17 @@ bash scripts/run_tests.sh all -v
 
 ```bash
 # Run all tests
-python3 -m pytest tests/
+.venv/bin/python -m pytest tests/
 
 # Run specific test file
-python3 -m pytest tests/test_einsum_analyzer.py -v
+.venv/bin/python -m pytest tests/test_einsum_analyzer.py -v
 
 # Run tests matching pattern
-python3 -m pytest tests/ -k "kernelbench"
-python3 -m pytest tests/ -k "Integration"
+.venv/bin/python -m pytest tests/ -k "kernelbench"
+.venv/bin/python -m pytest tests/ -k "Integration"
 
 # With coverage
-python3 -m pytest tests/ --cov=solar --cov-report=html
+.venv/bin/python -m pytest tests/ --cov=solar --cov-report=html
 ```
 
 ## Test Categories
@@ -154,7 +158,7 @@ Tests einsum equation generation and conversion to `einsum_graph.yaml` and `eins
 Tests hardware-independent analysis (`analysis.yaml`) and performance prediction (`perf_<arch>.yaml`):
 - **EinsumGraphAnalyzer**: Compute MACs, FLOPs, orojenesis_bytes, fused_bytes
 - **EinsumGraphPerfModel**: SOL roofline predictions
-- **Architecture configs**: H100_PCIe, A6000, H100_fp32
+- **Architecture configs**: normalized AMD ROCm profiles only
 - **LLM agent integration**: Dynamic handler generation for unknown ops
 - **Node registry**: Extensible operation handler system
 
@@ -195,13 +199,11 @@ End-to-end tests with benchmark suites:
 - `test_full_kernelbench_pipeline`: Kernelbench end-to-end
 
 ### 7. Example Tests
-Tests that all example scripts run successfully:
-- **DenseAttention**: Full attention matrix computation
-- **SlidingWindowAttention**: Local window attention
-- **RandomAttention**: Random sparse attention
-- **BlockSparseAttention**: Block-sparse attention patterns
+Tests that all maintained example scripts run successfully:
 - **Attention**: Multi-head self-attention
 - **BERT**: Complete BERT-like model
+- **Conv2d**: Convolution pipeline
+- **Matmul**: Matrix multiplication pipeline
 
 ## Model Compatibility
 
@@ -352,17 +354,19 @@ layers:
     fused_bytes: 16448
 ```
 
-**perf_H100_PCIe.yaml** (Stage 4):
+**perf_Radeon_RX_9060_XT.yaml** (Stage 4):
 ```yaml
-arch: H100_PCIe
-precision: fp32
-total:
-  unfused_runtime_ms: 0.0012
-  fused_runtime_ms: 0.0008
-layers:
-  Model.linear:
-    unfused_runtime_ms: 0.0012
-    fused_runtime_ms: 0.0008
+model:
+  precision: fp32
+  rocm_native: true
+arch:
+  name: Radeon_RX_9060_XT
+  vendor: AMD
+  gfx_target: gfx1200
+unfused:
+  runtime_ms: 0.0012
+fused:
+  runtime_ms: 0.0008
 ```
 
 ## Adding New Tests
@@ -481,7 +485,11 @@ bash scripts/run_tests.sh unit
 bash scripts/run_tests.sh all
 ```
 
-### GitHub Actions Workflow (example)
+### CI workflow (example)
+
+Use a Linux x86_64 runner with enough disk for the pinned ROCm PyTorch wheel.
+GPU device access is required only for `solar-rocm-doctor` and executable
+benchmark tests; the ordinary unit suite runs in CPU/meta safe mode.
 
 ```yaml
 name: Solar Tests
@@ -489,54 +497,14 @@ name: Solar Tests
 on: [push, pull_request]
 
 jobs:
-  quick-tests:
-    name: Quick Smoke Tests
+  tests:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python 3.8
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.8'
-    
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-        pip install pytest pytest-cov
-    
-    - name: Run quick tests
-      run: |
-        bash scripts/run_tests.sh quick
-
-  full-tests:
-    name: Full Test Suite
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    strategy:
-      matrix:
-        python-version: ['3.8', '3.9', '3.10', '3.11']
-    
-    steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-        pip install pytest pytest-cov
-    
-    - name: Run all tests with coverage
-      run: |
-        bash scripts/run_tests.sh all
-        python3 -m pytest tests/ --cov=solar --cov-report=xml
-    
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --python 3.12 --extra dev
+      - run: uv run bash scripts/run_tests.sh all
+      - run: uv run python -m pytest tests/ --cov=solar --cov-report=xml
 ```
 
 ## YAML Output Format
@@ -572,36 +540,33 @@ This makes outputs easier to inspect, diff, and debug, at a small cost of slight
 
 1. **Import Errors**
    ```bash
-   # Install package in development mode
-   pip install -e .
+   # Recreate the pinned Python 3.12 ROCm environment
+   uv sync --frozen --python 3.12 --extra dev
    ```
 
 2. **Missing Dependencies**
    ```bash
-   # Install all dependencies
+   # Recommended
+   bash install_uv.sh
+
+   # Supported pip fallback; requirements.txt declares the ROCm indexes
    pip install -r requirements.txt
-   
-   # For development/testing
-   pip install pytest pytest-cov
-   
-   # For graph visualization
-   pip install graphviz matplotlib
+   pip install -e . --no-deps
    ```
 
 3. **Test Discovery Issues**
    ```bash
-   # Run from solar/ root directory
-   cd /path/to/solar
-   python3 -m pytest tests/
+   # Run from the repository root
+   cd /path/to/SOLAR-ROCm
+   .venv/bin/python -m pytest tests/
    ```
 
 4. **Model Loading Failures**
    ```bash
-   # Check PyTorch and torchview versions
-   pip install torch>=2.0.0 torchview>=0.2.6
-   
-   # For RNN models, ensure CPU fallback is working
-   # (Solar automatically handles meta → cpu fallback)
+   # Inspect the pinned ROCm stack and vendored torchview import
+   .venv/bin/python -c "import torch; from solar._vendor import torchview; print(torch.__version__, torch.version.hip)"
+
+   # Solar automatically handles meta-to-CPU fallback during graph extraction.
    ```
 
 5. **YAML Anchor/Alias Issues**
@@ -644,18 +609,16 @@ Solar includes several example models in `examples/`:
 bash scripts/run_tests.sh examples
 
 # Or run individual examples
-cd examples/DenseAttention && bash run_solar.sh
-cd examples/SlidingWindowAttention && bash run_solar.sh
-cd examples/RandomAttention && bash run_solar.sh
-cd examples/BlockSparseAttention && bash run_solar.sh
 cd examples/Attention && bash run_solar.sh
 cd examples/BERT && bash run_solar.sh
+cd examples/Conv2d && bash run_solar.sh
+cd examples/Matmul && bash run_solar.sh
 ```
 
 Each example demonstrates:
 - Complete 5-stage pipeline
 - PDF graph visualization
-- Performance prediction on H100
+- Performance prediction on the default RX 9060 XT profile
 
 ## Performance Testing
 
@@ -681,25 +644,12 @@ def test_einsum_performance():
 
 ## Test Execution Times
 
-Approximate execution times on a typical development machine:
+Execution time depends on CPU, storage, and whether the pinned environment is
+already synchronized. On the validated development host, the 333-test suite
+completes in roughly 20 seconds and the four maintained example pipelines in
+roughly 15 seconds. GPU correctness/timing tests are intentionally separate;
+their duration depends on the selected timing profile and native compilation
+cache.
 
-| Test Category | Tests | Time | Command |
-|--------------|-------|------|---------|
-| Quick smoke tests | 2 | ~1 min | `bash scripts/run_tests.sh quick` |
-| Graph processing | 10 | ~50 sec | `bash scripts/run_tests.sh graph` |
-| Einsum analyzer | 15 | ~37 sec | `bash scripts/run_tests.sh einsum` |
-| Model analyzer | 15 | ~39 sec | `bash scripts/run_tests.sh model` |
-| LLM agent | 20 | ~39 sec | `bash scripts/run_tests.sh llm` |
-| BERT example | 1 | ~44 sec | `bash scripts/run_tests.sh bert` |
-| Integration | 6 | ~48 sec | `bash scripts/run_tests.sh integration` |
-| Examples | 6 | ~3 min | `bash scripts/run_tests.sh examples` |
-| **All tests** | **~70** | **~5-6 min** | `bash scripts/run_tests.sh` |
-
-## Next Steps
-
-1. Add property-based testing with hypothesis for einsum equation validation
-2. Implement performance regression tests
-3. Add mutation testing for critical paths
-4. Create test data generators for complex transformer models
-5. Add CI/CD pipeline configuration for automated testing
-
+Use the commands rather than hard-coded per-module test counts as the source of
+truth, because regression coverage grows over time.

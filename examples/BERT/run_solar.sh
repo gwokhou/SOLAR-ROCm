@@ -7,7 +7,7 @@ set -euo pipefail
 # Run Solar processing + einsum pipeline for the standalone BERT example.
 #
 # Outputs are written under:
-#   solar/examples/BERT/output/{graph,einsum,analysis,perf,timeloop}
+#   examples/BERT/output/{graph,einsum,analysis,perf,timeloop}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOLAR_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

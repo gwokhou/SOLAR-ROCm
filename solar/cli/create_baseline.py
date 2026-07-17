@@ -40,6 +40,7 @@ def main() -> None:
         or f"{evaluation['solution_name']}@{evaluation['solution_hash'][:12]}",
         "benchmark_hash": evaluation["benchmark_hash"],
         "solution_hash": evaluation["solution_hash"],
+        "architecture_hash": evaluation["architecture_hash"],
         "gfx_target": evaluation["environment"]["gfx_target"],
         "timing_profile": evaluation["timing_profile"],
         "cache_policy": evaluation["cache_policy"],

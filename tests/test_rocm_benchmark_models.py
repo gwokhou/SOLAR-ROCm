@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from solar.benchmark.models import BaselineRegistry, BenchmarkSpec, SolutionSpec
+from solar.benchmark import backends
 from solar.benchmark.backends import BackendUnavailable, get_backend
 from solar.rocm.environment import Capability, RocmEnvironment
 from solar.benchmark.staging import (
@@ -27,6 +28,30 @@ def _write_specs(tmp_path: Path) -> tuple[Path, Path, Path]:
     source = tmp_path / "solution.py"
     source.write_text("def run(): return 1\n")
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    source_graph = tmp_path / "einsum_graph.yaml"
+    source_graph.write_text("layers: {}\n")
+    graph_digest = hashlib.sha256(source_graph.read_bytes()).hexdigest()
+    analysis = tmp_path / "analysis.yaml"
+    analysis.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "layers": {},
+                "total": {
+                    "flops": 0,
+                    "fused_bytes": 0,
+                    "macs_by_precision": {},
+                },
+                "metadata": {
+                    "source_graph_sha256": graph_digest,
+                    "dtype_accounting": "per_tensor",
+                    "precision": "fp16",
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    analysis_digest = hashlib.sha256(analysis.read_bytes()).hexdigest()
     benchmark = tmp_path / "benchmark.yaml"
     benchmark.write_text(
         yaml.safe_dump(
@@ -39,7 +64,17 @@ def _write_specs(tmp_path: Path) -> tuple[Path, Path, Path]:
                     "entry_point": "run",
                     "input_factory": "get_inputs",
                 },
-                "workloads": [{"name": "tiny", "flops": 2, "fused_bytes": 4}],
+                "workloads": [
+                    {
+                        "name": "tiny",
+                        "analysis": {
+                            "path": "analysis.yaml",
+                            "sha256": analysis_digest,
+                            "source_graph": "einsum_graph.yaml",
+                            "source_graph_sha256": graph_digest,
+                        },
+                    }
+                ],
                 "cache_policy": "cold",
             }
         )
@@ -76,6 +111,40 @@ def test_benchmark_hash_covers_reference_source(tmp_path: Path):
         "def get_inputs(workload, device): return []\ndef run(): return 2\n"
     )
     assert BenchmarkSpec.load(benchmark_path).raw_hash != before
+
+
+def test_benchmark_rejects_manual_sol_totals(tmp_path: Path):
+    benchmark_path, _, _ = _write_specs(tmp_path)
+    data = yaml.safe_load(benchmark_path.read_text())
+    data["workloads"][0] = {"name": "tiny", "flops": 2, "fused_bytes": 4}
+    benchmark_path.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="manual workload"):
+        BenchmarkSpec.load(benchmark_path)
+
+
+def test_benchmark_rejects_tampered_analysis_artifact(tmp_path: Path):
+    benchmark_path, _, _ = _write_specs(tmp_path)
+    (tmp_path / "analysis.yaml").write_text("schema_version: 2\n")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        BenchmarkSpec.load(benchmark_path)
+
+
+def test_benchmark_rejects_analysis_drift_even_with_updated_hash(tmp_path: Path):
+    benchmark_path, _, _ = _write_specs(tmp_path)
+    analysis_path = tmp_path / "analysis.yaml"
+    analysis = yaml.safe_load(analysis_path.read_text())
+    analysis["total"]["fused_bytes"] = 1
+    analysis_path.write_text(yaml.safe_dump(analysis, sort_keys=False))
+    benchmark = yaml.safe_load(benchmark_path.read_text())
+    benchmark["workloads"][0]["analysis"]["sha256"] = hashlib.sha256(
+        analysis_path.read_bytes()
+    ).hexdigest()
+    benchmark_path.write_text(yaml.safe_dump(benchmark))
+
+    with pytest.raises(ValueError, match="drifted"):
+        BenchmarkSpec.load(benchmark_path)
 
 
 def test_staging_rejects_hash_mismatch(tmp_path: Path):
@@ -136,6 +205,7 @@ def test_baseline_requires_exact_environment(tmp_path: Path):
                 "name": "v1",
                 "benchmark_hash": benchmark.raw_hash,
                 "solution_hash": "a" * 64,
+                "architecture_hash": "arch",
                 "gfx_target": "gfx1200",
                 "timing_profile": "official",
                 "cache_policy": "cold",
@@ -146,9 +216,15 @@ def test_baseline_requires_exact_environment(tmp_path: Path):
         )
     )
     baseline = BaselineRegistry.load(path)
-    baseline.assert_compatible(benchmark, "env", "official", "gfx1200", True)
+    baseline.assert_compatible(benchmark, "env", "arch", "official", "gfx1200", True)
     with pytest.raises(ValueError, match="environment_hash"):
-        baseline.assert_compatible(benchmark, "different", "official", "gfx1200", True)
+        baseline.assert_compatible(
+            benchmark, "different", "arch", "official", "gfx1200", True
+        )
+    with pytest.raises(ValueError, match="architecture_hash"):
+        baseline.assert_compatible(
+            benchmark, "env", "different", "official", "gfx1200", True
+        )
 
 
 def test_native_backend_returns_structured_capability_failure():
@@ -165,3 +241,39 @@ def test_native_backend_returns_structured_capability_failure():
     )
     with pytest.raises(BackendUnavailable, match="missing header"):
         get_backend("rocwmma").assert_available(environment)
+
+
+def test_native_backend_uses_detected_gfx_target_and_current_python(
+    monkeypatch, tmp_path
+):
+    observed = None
+
+    def run(command, **kwargs):
+        nonlocal observed
+        observed = command
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    solution = type(
+        "Solution",
+        (),
+        {"compile_command": ("{python}", "build.py", "{gfx_target}", "{staging}")},
+    )()
+    get_backend("hip_cpp")._compile(solution, tmp_path, "gfx1100")
+
+    assert observed == [
+        backends.sys.executable,
+        "build.py",
+        "gfx1100",
+        str(tmp_path),
+    ]
+
+
+@pytest.mark.parametrize(
+    "manifest", ["solution.yaml", "triton_solution.yaml", "hip_solution.yaml"]
+)
+def test_rocm_example_solution_hashes_and_staging(manifest):
+    path = Path(__file__).parents[1] / "examples" / "rocm_matmul" / manifest
+    solution = SolutionSpec.load(path)
+    with stage_solution(solution) as staged:
+        assert all((staged.root / source.path).is_file() for source in solution.sources)

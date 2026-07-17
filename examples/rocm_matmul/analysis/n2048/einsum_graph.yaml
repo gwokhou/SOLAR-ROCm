@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+model_name: rocm_fp16_matmul_n2048
+layers:
+  start_a:
+    type: start
+    is_real_einsum: false
+    tensor_names: {inputs: [], outputs: [a]}
+    tensor_types: {inputs: [], outputs: [input]}
+    tensor_shapes: {inputs: [], outputs: [[2048, 2048]]}
+    connections: {inputs: [], outputs: [matmul]}
+    tensor_dtypes: {inputs: [], outputs: [torch.float16]}
+  start_b:
+    type: start
+    is_real_einsum: false
+    tensor_names: {inputs: [], outputs: [b]}
+    tensor_types: {inputs: [], outputs: [input]}
+    tensor_shapes: {inputs: [], outputs: [[2048, 2048]]}
+    connections: {inputs: [], outputs: [matmul]}
+    tensor_dtypes: {inputs: [], outputs: [torch.float16]}
+  matmul:
+    type: matmul
+    einsum_equation: MK,KN->MN
+    elementwise_op: mul
+    reduction_op: add
+    is_real_einsum: true
+    is_einsum_supportable: true
+    tensor_names: {inputs: [a, b], outputs: [output]}
+    tensor_types: {inputs: [input, input], outputs: [output]}
+    tensor_shapes:
+      inputs: [[2048, 2048], [2048, 2048]]
+      outputs: [[2048, 2048]]
+    operands: {Input: [M, K], Weight: [K, N], Output: [M, N]}
+    connections: {inputs: [start_a, start_b], outputs: []}
+    tensor_dtypes:
+      inputs: [torch.float16, torch.float16]
+      outputs: [torch.float16]

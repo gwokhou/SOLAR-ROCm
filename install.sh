@@ -65,14 +65,11 @@ cd "${SCRIPT_DIR}"
 
 if [[ "$SKIP_TORCH" == "true" ]]; then
     echo "  Skipping torch (--skip-torch specified)."
-    # Install everything except torch
-    pip install "networkx>=3.0" "pyyaml>=6.0" "numpy>=1.24.0" "matplotlib>=3.5.0" \
-                "scipy>=1.10.0" "pandas>=1.5.0" "einops>=0.6.0"
+    # Preserve every other pinned/runtime dependency, including Triton ROCm
+    # and the official wheel indexes declared by requirements.txt.
+    pip install -r <(sed '/^torch==/d' requirements.txt)
 else
-    pip install \
-        --extra-index-url https://download.pytorch.org/whl/rocm7.2 \
-        --extra-index-url https://download.pytorch.org/whl/ \
-        -r requirements.txt
+    pip install -r requirements.txt
 fi
 
 # Step 2: Install SOLAR and its vendored torchview package.

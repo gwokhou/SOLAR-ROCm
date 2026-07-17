@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from solar.common.constants import SAFE_ENV_VARS
 from solar.common.types import ProcessingConfig
 from solar.common.utils import ensure_directory, get_file_prefix, setup_safe_environment
 from solar.graph.pytorch_processor import PyTorchProcessor
@@ -195,13 +196,7 @@ sys.exit(0 if success else 1)
         ]
 
         env = os.environ.copy()
-        env.update(
-            {
-                "OPENBLAS_NUM_THREADS": "1",
-                "OMP_NUM_THREADS": "1",
-                "PYTORCH_DISABLE_CUDA": "1",
-            }
-        )
+        env.update(SAFE_ENV_VARS)
 
         try:
             result = subprocess.run(
@@ -223,5 +218,3 @@ sys.exit(0 if success else 1)
         except Exception as e:
             print(f"Subprocess error: {e}")
             return False
-
-

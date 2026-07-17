@@ -33,6 +33,7 @@ class TensorShapes:
     """Positional tensor shapes for an operation.
     with ordered lists of shapes matching the einsum operand order.
     """
+
     inputs: List[TensorShape] = field(default_factory=list)
     outputs: List[TensorShape] = field(default_factory=list)
 
@@ -53,11 +54,10 @@ class TensorShapes:
         return len(self.outputs[idx]) if idx < len(self.outputs) else 0
 
 
-
 @dataclass
 class NodeInfo:
     """Information about a single node in the computation graph.
-    
+
     Attributes:
         node_id: Unique identifier for the node.
         type: Type of operation (e.g., 'matmul', 'conv2d').
@@ -72,6 +72,7 @@ class NodeInfo:
         output_types: Type classification per output: 'output'.
         module_args: Module-specific arguments.
     """
+
     node_id: str
     type: str
     node_class: str = "UnknownNode"
@@ -107,7 +108,7 @@ class NodeInfo:
 @dataclass
 class GraphInfo:
     """Information about a computation graph.
-    
+
     Attributes:
         nodes: List of nodes in the graph.
         edges: List of edges between nodes.
@@ -115,6 +116,7 @@ class GraphInfo:
         graph_class: Class of the graph object.
         metadata: Additional metadata about the graph.
     """
+
     nodes: List[NodeInfo]
     edges: EdgeList = field(default_factory=list)
     total_nodes: int = 0
@@ -125,7 +127,7 @@ class GraphInfo:
 @dataclass
 class EinsumOperation:
     """Represents an einsum operation.
-    
+
     Attributes:
         equation: The einsum equation string.
         operand_names: Names of the operands.
@@ -134,6 +136,7 @@ class EinsumOperation:
         compute_cost: Number of operations required.
         memory_cost: Memory elements accessed.
     """
+
     equation: str
     operand_names: List[str]
     operand_dims: List[List[str]]
@@ -146,7 +149,7 @@ class EinsumOperation:
 @dataclass
 class AnalysisResult:
     """Result of model analysis.
-    
+
     Attributes:
         layers: Layer-by-layer analysis results.
         total: Total compute and memory statistics.
@@ -154,6 +157,7 @@ class AnalysisResult:
         roofline_performance: Roofline model results.
         metadata: Additional analysis metadata.
     """
+
     layers: Dict[str, Dict[str, Any]]
     total: Dict[str, Union[int, float]]
     fusion_analysis: Optional[Dict[str, Any]] = None
@@ -162,30 +166,9 @@ class AnalysisResult:
 
 
 @dataclass
-class ArchitectureConfig:
-    """Hardware architecture configuration.
-    
-    Attributes:
-        name: Architecture name (for example, 'RX_9060_XT').
-        freq_ghz: Frequency in GHz.
-        mac_per_cycle: MAC operations per cycle for different precisions.
-        dram_bandwidth: DRAM bandwidth in bytes per cycle.
-        sram_capacity: SRAM capacity in bytes.
-        power_per_chip: Power consumption per chip in watts.
-    """
-    name: str
-    freq_ghz: float
-    mac_per_cycle: Dict[str, int]
-    dram_bandwidth: float
-    sram_capacity: int
-    power_per_chip: float = 1000.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class ProcessingConfig:
     """Configuration for processing models.
-    
+
     Attributes:
         save_graph: Whether to save graph visualizations.
         force_rerun: Force reprocessing even if output exists.
@@ -194,6 +177,7 @@ class ProcessingConfig:
         output_dir: Directory for output files.
         debug: Enable debug output.
     """
+
     save_graph: bool = False
     force_rerun: bool = False
     batch_size: int = 5

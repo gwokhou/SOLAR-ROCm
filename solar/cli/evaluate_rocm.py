@@ -11,6 +11,26 @@ from pathlib import Path
 
 from solar.benchmark import BenchmarkSpec, RocmEvaluator, SolutionSpec
 from solar.benchmark.clock_lock import acquire_clock_lock
+from solar.rocm import ArchitectureProfile
+
+_CANDIDATE_FAILURE_STATUSES = frozenset(
+    {"incorrect", "reward_hack", "runtime_error", "unstable_timing"}
+)
+
+
+def _report_exit_code(report: object) -> int:
+    """Map structured evaluator outcomes to automation-safe exit codes."""
+    if getattr(report, "failure", None):
+        return 2
+    statuses = {
+        str(getattr(item, "status", "invalid"))
+        for item in getattr(report, "workloads", ())
+    }
+    if statuses & _CANDIDATE_FAILURE_STATUSES:
+        return 1
+    if any(status not in {"passed", "diagnostic"} for status in statuses):
+        return 2
+    return 0
 
 
 def _run_container(args: argparse.Namespace) -> int:
@@ -18,6 +38,8 @@ def _run_container(args: argparse.Namespace) -> int:
     solution = SolutionSpec.load(args.solution)
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    architecture_arg = args.arch_config
+    architecture_path = Path(args.arch_config)
     command = [
         "docker",
         "run",
@@ -39,6 +61,10 @@ def _run_container(args: argparse.Namespace) -> int:
         "-v",
         f"{output.parent}:/output",
     ]
+    if architecture_path.is_file():
+        architecture_path = architecture_path.resolve()
+        command += ["-v", f"{architecture_path.parent}:/architecture:ro"]
+        architecture_arg = f"/architecture/{architecture_path.name}"
     baseline_args: list[str] = []
     if args.baseline:
         baseline = Path(args.baseline).resolve()
@@ -54,6 +80,8 @@ def _run_container(args: argparse.Namespace) -> int:
         f"/output/{output.name}",
         "--timing-profile",
         args.timing_profile,
+        "--arch-config",
+        architecture_arg,
         "--no-lock-clocks",
         *baseline_args,
     ]
@@ -76,6 +104,11 @@ def main() -> None:
     parser.add_argument("--baseline")
     parser.add_argument("--output", default="evaluation.yaml")
     parser.add_argument(
+        "--arch-config",
+        default="RX_9060_XT",
+        help="AMD architecture profile name or YAML path",
+    )
+    parser.add_argument(
         "--timing-profile",
         choices=("standard", "official", "quick"),
         default="standard",
@@ -88,7 +121,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.untrusted:
         raise SystemExit(_run_container(args))
-    report = RocmEvaluator().evaluate(
+    architecture = ArchitectureProfile.load(args.arch_config)
+    report = RocmEvaluator(architecture=architecture).evaluate(
         args.benchmark,
         args.solution,
         baseline=args.baseline,
@@ -98,9 +132,11 @@ def main() -> None:
     )
     report.write(args.output)
     print(f"Evaluation written to {args.output}")
+    exit_code = _report_exit_code(report)
     if report.failure:
         print(report.failure)
-        raise SystemExit(2)
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

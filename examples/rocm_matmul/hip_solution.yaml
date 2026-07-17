@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+name: hip_cpp_matmul
+backend: hip_cpp
+gfx_targets: [gfx1200]
+entry_point: run
+sources:
+  - path: hip_extension.cu
+    sha256: 7ce47bfaf33ff987c13f724b6de798a32062ddd93c73b01ee0377234b4d65e6e
+  - path: build_hip_extension.py
+    sha256: 62126646654dda3e49e200b392f4d83dde1f4693bd7691c6c424c0bcd8c455c5
+compile:
+  command: ["{python}", "build_hip_extension.py", "{gfx_target}", "{staging}"]

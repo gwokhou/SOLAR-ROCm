@@ -26,15 +26,20 @@ class RewardHackDetected(ValueError):
 _BANNED_IMPORTS = {
     "builtins",
     "ctypes",
+    "concurrent",
     "http",
     "importlib",
     "inspect",
+    "multiprocessing",
     "os",
     "pathlib",
     "requests",
     "resource",
     "socket",
+    "solar",
     "subprocess",
+    "threading",
+    "_thread",
     "time",
     "urllib",
 }
@@ -44,7 +49,9 @@ _BANNED_CALLS = {
     "compile",
     "eval",
     "exec",
+    "delattr",
     "open",
+    "setattr",
     "os.popen",
     "os.system",
     "torch.cuda.Event",
@@ -68,6 +75,10 @@ def scan_python_source(path: Path) -> None:
     except SyntaxError as exc:
         raise RewardHackDetected(f"invalid Python source: {exc}") from exc
     for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _call_name(node).startswith(
+            ("sys.modules", "sys._getframe", "sys.settrace", "sys.setprofile")
+        ):
+            raise RewardHackDetected(f"banned interpreter access: {_call_name(node)}")
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.split(".", 1)[0] in _BANNED_IMPORTS:
@@ -79,6 +90,15 @@ def scan_python_source(path: Path) -> None:
             name = _call_name(node.func)
             if name in _BANNED_CALLS:
                 raise RewardHackDetected(f"banned call: {name}")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Attribute) and _call_name(target).startswith(
+                    ("torch.", "builtins.")
+                ):
+                    raise RewardHackDetected(
+                        f"banned monkey patch: {_call_name(target)}"
+                    )
 
 
 @dataclass

@@ -425,9 +425,8 @@ parse_dim_tokens("A12B34")   # -> ["A12", "B34"]
 
 ## See Also
 
-- `solar/solar/einsum/pytorch_to_einsum.py` - PyTorch to einsum conversion
-- `solar/solar/einsum/einsum_rank_renamer.py` - Dimension rank renaming
-- `solar/solar/einsum/einsum_to_taco.py` - TACO expression generation
-- `solar/solar/einsum/einsum_to_timeloop.py` - Timeloop format conversion
-- `solar/solar/common/utils.py` - Utility functions including `parse_dim_tokens`
-
+- `solar/einsum/pytorch_to_einsum.py` - PyTorch to einsum conversion
+- `solar/einsum/einsum_rank_renamer.py` - Dimension rank renaming
+- `solar/einsum/einsum_to_taco.py` - TACO expression generation
+- `solar/einsum/einsum_to_timeloop.py` - Timeloop format conversion
+- `solar/common/utils.py` - Utility functions including `parse_dim_tokens`

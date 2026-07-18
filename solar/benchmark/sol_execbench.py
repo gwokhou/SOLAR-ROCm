@@ -21,6 +21,7 @@ import json
 import math
 import operator
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -67,7 +68,9 @@ def _imports(source: str) -> set[str]:
     return result
 
 
-_BINARY_OPERATORS = {
+_BINARY_OPERATORS: dict[
+    type[ast.operator], Callable[[int | float, int | float], int | float]
+] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -76,7 +79,10 @@ _BINARY_OPERATORS = {
     ast.Mod: operator.mod,
     ast.Pow: operator.pow,
 }
-_UNARY_OPERATORS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+_UNARY_OPERATORS: dict[type[ast.unaryop], Callable[[int | float], int | float]] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
 
 
 def _evaluate_expression(expression: str, values: dict[str, int]) -> int:
@@ -142,6 +148,19 @@ class SolExecBenchProblem:
                 "definition is missing: "
                 + ", ".join(sorted(required - set(definition)))
             )
+        for field in ("axes", "inputs", "outputs"):
+            if not isinstance(definition[field], dict):
+                raise SolExecBenchFormatError(f"definition {field} must be an object")
+        unsupported_axes = {
+            str(name): str(spec.get("type", ""))
+            for name, spec in definition["axes"].items()
+            if not isinstance(spec, dict)
+            or str(spec.get("type", "")) not in {"const", "var", "expr"}
+        }
+        if unsupported_axes:
+            raise SolExecBenchFormatError(
+                f"definition has unsupported axes: {unsupported_axes}"
+            )
         tree = ast.parse(str(definition["reference"]), mode="exec")
         run_node = next(
             (
@@ -178,6 +197,25 @@ class SolExecBenchProblem:
                 raw
             ):
                 raise SolExecBenchFormatError(f"invalid workload at line {line_number}")
+            if not isinstance(raw["axes"], dict) or not isinstance(raw["inputs"], dict):
+                raise SolExecBenchFormatError(
+                    f"workload axes/inputs must be objects at line {line_number}"
+                )
+            unknown_inputs = set(raw["inputs"]) - set(definition["inputs"])
+            if unknown_inputs:
+                raise SolExecBenchFormatError(
+                    f"unknown workload inputs at line {line_number}: "
+                    + ", ".join(sorted(unknown_inputs))
+                )
+            allowed_input_types = {"custom", "random", "safetensors", "scalar"}
+            for name, spec in raw["inputs"].items():
+                if (
+                    not isinstance(spec, dict)
+                    or str(spec.get("type", "random")) not in allowed_input_types
+                ):
+                    raise SolExecBenchFormatError(
+                        f"invalid input {name} at line {line_number}"
+                    )
             uuid = str(raw["uuid"])
             if not uuid or uuid in seen:
                 raise SolExecBenchFormatError(
@@ -189,7 +227,11 @@ class SolExecBenchProblem:
             }
             if "custom" in input_types and input_types != {"custom"}:
                 raise SolExecBenchFormatError(
-                    "custom and non-custom inputs cannot be mixed"
+                    "custom and non-custom workload entries cannot be mixed"
+                )
+            if "custom" in input_types and not custom:
+                raise SolExecBenchFormatError(
+                    "custom workloads require a custom_inputs_entrypoint"
                 )
             workloads.append(OfficialWorkload(raw=raw, line_number=line_number))
         if not workloads:
@@ -232,6 +274,19 @@ class SolExecBenchProblem:
     def resolved_axes(self, workload: OfficialWorkload) -> dict[str, int]:
         values: dict[str, int] = {}
         supplied = {str(key): int(value) for key, value in workload.raw["axes"].items()}
+        expected_supplied = {
+            str(name)
+            for name, spec in self.definition["axes"].items()
+            if str(spec.get("type", "")) == "var"
+        }
+        if set(supplied) != expected_supplied:
+            raise SolExecBenchFormatError(
+                f"workload {workload.uuid} axes must exactly match variable axes"
+            )
+        if any(value < 0 for value in supplied.values()):
+            raise SolExecBenchFormatError(
+                f"workload {workload.uuid} axes must be non-negative"
+            )
         for name, spec in self.definition["axes"].items():
             axis_type = str(spec.get("type", ""))
             if axis_type == "const":
@@ -242,6 +297,8 @@ class SolExecBenchProblem:
                         f"workload {workload.uuid} lacks axis {name}"
                     )
                 values[name] = supplied[name]
+        if any(value < 0 for value in values.values()):
+            raise SolExecBenchFormatError("constant axes must be non-negative")
         pending = {
             name: str(spec["expression"])
             for name, spec in self.definition["axes"].items()
@@ -303,7 +360,12 @@ class SolExecBenchProblem:
         specs = workload.raw["inputs"]
         namespace: dict[str, Any] | None = None
         custom_values: dict[str, Any] | None = None
-        if {str(item.get("type", "random")) for item in specs.values()} == {"custom"}:
+        custom_names = {
+            str(name)
+            for name, item in specs.items()
+            if str(item.get("type", "random")) == "custom"
+        }
+        if custom_names:
             namespace = self.reference_namespace()
             entrypoint = str(self.definition.get("custom_inputs_entrypoint") or "")
             if not entrypoint:
@@ -316,6 +378,13 @@ class SolExecBenchProblem:
             custom_values = namespace[entrypoint](
                 {**axes, **scalars}, torch.device(device)
             )
+            if (
+                not isinstance(custom_values, dict)
+                or set(custom_values) != custom_names
+            ):
+                raise SolExecBenchFormatError(
+                    "custom input factory must return exactly the custom inputs"
+                )
 
         dtype_map = {
             name: getattr(torch, name) for name in _DTYPE_BYTES if hasattr(torch, name)
@@ -325,6 +394,8 @@ class SolExecBenchProblem:
             input_spec = specs.get(name, {"type": "random"})
             input_type = str(input_spec.get("type", "random"))
             if input_type == "scalar":
+                if "value" not in input_spec:
+                    raise SolExecBenchFormatError(f"scalar input {name} lacks value")
                 values.append(input_spec["value"])
                 continue
             if input_type == "custom":
@@ -332,7 +403,9 @@ class SolExecBenchProblem:
                     raise SolExecBenchFormatError(
                         f"custom input factory omitted {name}"
                     )
-                values.append(custom_values[name])
+                value = custom_values[name]
+                self._validate_generated_input(name, value, tensor_spec, axes, device)
+                values.append(value)
                 continue
             dtype_name = str(tensor_spec["dtype"])
             if dtype_name not in dtype_map:
@@ -346,17 +419,75 @@ class SolExecBenchProblem:
                 tensor = safetensors.torch.load_file(str(candidate), device=device)[
                     str(input_spec["tensor_key"])
                 ]
+                self._validate_generated_input(name, tensor, tensor_spec, axes, device)
                 values.append(tensor)
-            elif dtype.is_floating_point:
-                base = torch.randn(shape, dtype=torch.float32, device=device)
-                values.append(base.to(dtype))
-            elif dtype == torch.bool:
-                values.append(
-                    torch.randint(0, 2, shape, dtype=torch.bool, device=device)
-                )
             else:
-                values.append(torch.randint(-8, 8, shape, dtype=dtype, device=device))
+                if dtype.is_floating_point:
+                    value = torch.randn(shape, dtype=torch.float32, device=device).to(
+                        dtype
+                    )
+                elif dtype == torch.bool:
+                    value = torch.randint(0, 2, shape, dtype=torch.bool, device=device)
+                else:
+                    value = torch.randint(-8, 8, shape, dtype=dtype, device=device)
+                values.append(
+                    value.item()
+                    if self.tensor_shape(tensor_spec, axes) is None
+                    else value
+                )
         return tuple(values)
+
+    def _validate_generated_input(
+        self,
+        name: str,
+        value: Any,
+        tensor_spec: dict[str, Any],
+        axes: dict[str, int],
+        device: str,
+    ) -> None:
+        import torch
+
+        expected_shape = self.tensor_shape(tensor_spec, axes)
+        if not isinstance(value, torch.Tensor):
+            if expected_shape is not None:
+                raise SolExecBenchFormatError(f"generated input {name} is not a tensor")
+            expected_dtype = str(tensor_spec["dtype"])
+            scalar_valid = (
+                (expected_dtype == "bool" and isinstance(value, bool))
+                or (
+                    expected_dtype.startswith(("float", "bfloat"))
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                )
+                or (
+                    expected_dtype.startswith("int")
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                )
+            )
+            if not scalar_valid:
+                raise SolExecBenchFormatError(
+                    f"generated scalar input {name} is incompatible with {expected_dtype}"
+                )
+            return
+        if expected_shape is not None and tuple(value.shape) != expected_shape:
+            raise SolExecBenchFormatError(
+                f"generated input {name} shape {tuple(value.shape)} != {expected_shape}"
+            )
+        expected_dtype = str(tensor_spec["dtype"])
+        actual_dtype = str(value.dtype).replace("torch.", "")
+        if actual_dtype != expected_dtype:
+            raise SolExecBenchFormatError(
+                f"generated input {name} dtype {actual_dtype} != {expected_dtype}"
+            )
+        expected_device = torch.device(device)
+        if value.device.type != expected_device.type or (
+            expected_device.index is not None
+            and value.device.index != expected_device.index
+        ):
+            raise SolExecBenchFormatError(
+                f"generated input {name} device {value.device} != {expected_device}"
+            )
 
 
 class AmdCompatibilityAuditor:
@@ -564,8 +695,8 @@ class AmdCompatibilityAuditor:
             }
 
             for dtype_name in sorted(dtypes):
-                dtype = getattr(torch, dtype_name, None)
-                if not isinstance(dtype, torch.dtype):
+                probed_dtype = getattr(torch, dtype_name, None)
+                if not isinstance(probed_dtype, torch.dtype):
                     return self._result(
                         workload,
                         "incompatible",
@@ -574,7 +705,7 @@ class AmdCompatibilityAuditor:
                         evidence={"dtype": dtype_name},
                     )
                 try:
-                    torch.empty((1,), dtype=dtype, device=self.device).clone()
+                    torch.empty((1,), dtype=probed_dtype, device=self.device).clone()
                 except Exception as exc:  # pylint: disable=broad-exception-caught
                     reason = (
                         "unsupported_quantization_format"
@@ -726,6 +857,93 @@ def standalone_reference_source(problem: SolExecBenchProblem) -> str:
     definition_inputs = problem.definition["inputs"]
     custom = problem.definition.get("custom_inputs_entrypoint")
     prelude = f"""\n# Generated from pinned SOL-ExecBench JSON; no SOLAR runtime dependency.\nimport json as _json\nfrom pathlib import Path as _Path\nimport torch as _torch\n_WORKLOADS = _json.loads({json.dumps(workload_data)!r})\n_SHAPES = _json.loads({json.dumps(shape_data)!r})\n_AXES = _json.loads({json.dumps(axes_data)!r})\n_INPUTS = _json.loads({json.dumps(definition_inputs)!r})\n_CUSTOM_ENTRYPOINT = {custom!r}\n_ROOT = _Path(__file__).resolve().parent\n\ndef get_inputs(parameters, device):\n    uuid = str(parameters["uuid"])\n    workload = _WORKLOADS[uuid]\n    seed = int(parameters.get("seed", 200))\n    _torch.manual_seed(seed)\n    specs = workload["inputs"]\n    if specs and {{str(item.get("type", "random")) for item in specs.values()}} == {{"custom"}}:\n        custom_values = globals()[_CUSTOM_ENTRYPOINT](dict(_AXES[uuid]), _torch.device(device))\n    else:\n        custom_values = None\n    values = []\n    for name, tensor_spec in _INPUTS.items():\n        input_spec = specs.get(name, {{"type": "random"}})\n        input_type = str(input_spec.get("type", "random"))\n        if input_type == "scalar":\n            values.append(input_spec["value"])\n            continue\n        if input_type == "custom":\n            values.append(custom_values[name])\n            continue\n        dtype = getattr(_torch, str(tensor_spec["dtype"]))\n        shape = tuple(_SHAPES[uuid][name] or ())\n        if input_type == "safetensors":\n            import safetensors.torch as _st\n            values.append(_st.load_file(str(_ROOT / "data" / input_spec["path"]), device=str(device))[input_spec["tensor_key"]])\n        elif dtype.is_floating_point:\n            values.append(_torch.randn(shape, dtype=_torch.float32, device=device).to(dtype))\n        elif dtype == _torch.bool:\n            values.append(_torch.randint(0, 2, shape, dtype=_torch.bool, device=device))\n        else:\n            values.append(_torch.randint(-8, 8, shape, dtype=dtype, device=device))\n    return tuple(values)\n"""
+    validation_source = """
+def _validate_input(name, value, tensor_spec, shape, device):
+    if not isinstance(value, _torch.Tensor):
+        if shape is not None:
+            raise TypeError(f"generated input {name} is not a tensor")
+        expected_dtype = str(tensor_spec["dtype"])
+        scalar_valid = (
+            (expected_dtype == "bool" and isinstance(value, bool))
+            or (
+                expected_dtype.startswith(("float", "bfloat"))
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            )
+            or (
+                expected_dtype.startswith("int")
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            )
+        )
+        if not scalar_valid:
+            raise TypeError(
+                f"generated scalar input {name} is incompatible with {expected_dtype}"
+            )
+        return
+    if shape is not None and tuple(value.shape) != tuple(shape):
+        raise ValueError(
+            f"generated input {name} shape {tuple(value.shape)} != {tuple(shape)}"
+        )
+    expected_dtype = str(tensor_spec["dtype"])
+    actual_dtype = str(value.dtype).replace("torch.", "")
+    if actual_dtype != expected_dtype:
+        raise ValueError(
+            f"generated input {name} dtype {actual_dtype} != {expected_dtype}"
+        )
+    expected_device = _torch.device(device)
+    if value.device.type != expected_device.type or (
+        expected_device.index is not None
+        and value.device.index != expected_device.index
+    ):
+        raise ValueError(
+            f"generated input {name} device {value.device} != {expected_device}"
+        )
+"""
+    prelude = prelude.replace(
+        "\ndef get_inputs", validation_source + "\ndef get_inputs"
+    )
+    prelude = prelude.replace(
+        '    if specs and {str(item.get("type", "random")) for item in specs.values()} == {"custom"}:\n'
+        "        custom_values = globals()[_CUSTOM_ENTRYPOINT](dict(_AXES[uuid]), _torch.device(device))\n",
+        "    custom_names = {name for name, item in specs.items() "
+        "if str(item.get('type', 'random')) == 'custom'}\n"
+        "    if custom_names:\n"
+        "        scalar_values = {name: item['value'] for name, item in specs.items() "
+        "if str(item.get('type')) == 'scalar'}\n"
+        "        custom_values = globals()[_CUSTOM_ENTRYPOINT](\n"
+        "            {**dict(_AXES[uuid]), **scalar_values}, _torch.device(device)\n"
+        "        )\n"
+        "        if not isinstance(custom_values, dict) or set(custom_values) != custom_names:\n"
+        "            raise ValueError('custom input factory must return exactly the custom inputs')\n",
+    )
+    prelude = prelude.replace(
+        "            values.append(custom_values[name])\n",
+        "            value = custom_values[name]\n"
+        "            _validate_input(name, value, tensor_spec, _SHAPES[uuid][name], device)\n"
+        "            values.append(value)\n",
+    )
+    prelude = prelude.replace(
+        '            values.append(_st.load_file(str(_ROOT / "data" / input_spec["path"]), device=str(device))[input_spec["tensor_key"]])\n',
+        "            value = _st.load_file(str(_ROOT / 'data' / input_spec['path']), device=str(device))[input_spec['tensor_key']]\n"
+        "            _validate_input(name, value, tensor_spec, _SHAPES[uuid][name], device)\n"
+        "            values.append(value)\n",
+    )
+    prelude = prelude.replace(
+        "        elif dtype.is_floating_point:\n"
+        "            values.append(_torch.randn(shape, dtype=_torch.float32, device=device).to(dtype))\n"
+        "        elif dtype == _torch.bool:\n"
+        "            values.append(_torch.randint(0, 2, shape, dtype=_torch.bool, device=device))\n"
+        "        else:\n"
+        "            values.append(_torch.randint(-8, 8, shape, dtype=dtype, device=device))\n",
+        "        elif dtype.is_floating_point:\n"
+        "            value = _torch.randn(shape, dtype=_torch.float32, device=device).to(dtype)\n"
+        "        elif dtype == _torch.bool:\n"
+        "            value = _torch.randint(0, 2, shape, dtype=_torch.bool, device=device)\n"
+        "        else:\n"
+        "            value = _torch.randint(-8, 8, shape, dtype=dtype, device=device)\n"
+        "        values.append(value.item() if _SHAPES[uuid][name] is None else value)\n",
+    )
     return str(problem.definition["reference"]).rstrip() + "\n" + prelude
 
 

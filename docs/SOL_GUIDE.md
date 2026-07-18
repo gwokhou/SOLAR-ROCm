@@ -13,9 +13,14 @@ Solar computes three SOL (Speed-of-Light) performance estimates based on the roo
 |-------|-----------------|---------------------|----------|
 | **Unfused** | All tensors (Input + Weight + Output) per op | Whole-graph roofline on summed totals | Baseline / worst case |
 | **Fused** | Weights + model I/O only (intermediates excluded) | Whole-graph roofline on summed totals | Operator fusion |
-| **Fused+Prefetched** | Weights + model I/O only (intermediates excluded) | Whole-graph roofline on summed totals | Best case / perfect overlap |
+| **Fused+Prefetched** | Compulsory graph I/O + capacity-constrained tile-aware excess | Whole-graph roofline on summed totals | Formal lower bound / perfect overlap |
 
-> **Implementation note**: All three models apply a single whole-graph roofline: `max(total_compute_cycles, total_memory_cycles)`. They differ only in how memory bytes are totaled. In the current code, `fused` and `fused_prefetched` produce identical memory totals and therefore identical runtimes. See [Section 6](#6-known-implementation-gaps) for details.
+> **Implementation note**: All three models apply a single whole-graph roofline:
+> `max(total_compute_cycles, total_memory_cycles)`. In schema-v3 formal analysis,
+> `fused` is the compulsory graph-external floor while `fused_prefetched` is the
+> audited `io_lower_bound_bytes` produced from pinned Orojenesis evidence. Without
+> a formal solver result, the latter falls back to `fused` for diagnostic output
+> only and cannot be used for official scoring.
 
 ## Roofline Model Basics
 
@@ -118,15 +123,23 @@ Layer 3 (Linear): Read Weight, Write Model_Output
 ## 3. Fused+Prefetched SOL
 
 ### Description
-A **single roofline** is applied to the entire graph. Total compute and total memory accesses (weights + model I/O) are aggregated, assuming perfect overlap between compute and memory operations.
+A **single roofline** is applied to the entire graph. Total compute is combined
+with the compulsory graph I/O plus safely composable tile-aware excess traffic,
+assuming perfect overlap between compute and memory operations.
 
 ### Memory Calculation ([`graph_analyzer.py`](../solar/analysis/graph_analyzer.py))
 ```
-fused_prefetched_elements = Σ_i model_io_elems_i
-fused_prefetched_bytes    = fused_prefetched_elements × bytes_per_element
+compulsory_bytes = deduplicated graph-external tensor bytes
+solver_excess_i  = max(0, selected_OAVES_dram_bytes_i
+                           - modeled_compulsory_bytes_i)
+io_lower_bound_bytes = compulsory_bytes + max(safely_composable solver_excess_i)
+fused_prefetched_bytes = io_lower_bound_bytes
 ```
 
-> **Note**: In the current implementation, `fused_prefetched_elements` is computed identically to `fused_elements` (both sum `model_io_elems` per layer). They produce the same result. See [Section 6](#6-known-implementation-gaps).
+The maximum excess is composable without assuming independent regions cannot
+share cache residency. Exact einsums whose operands come from internal
+non-alias producers require a multi-einsum proof and are marked non-applicable;
+formal scoring fails if no solver layer is safely composable.
 
 ### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
@@ -156,13 +169,11 @@ Single roofline applied to (Total FLOPs, Total Memory)
 
 | Aspect | Unfused | Fused | Fused+Prefetched |
 |--------|---------|-------|------------------|
-| Intermediate tensors | Counted | Excluded | Excluded |
+| Intermediate tensors | Counted | Excluded | Reflected through solver excess |
 | Roofline granularity | Whole graph | Whole graph | Whole graph |
-| Memory assumption | All from DRAM | Intermediates cached | Intermediates cached |
-| Typical speedup | 1.0x (baseline) | 1.5-3x | Same as fused (*) |
-| Realism | Conservative | Realistic | Optimistic (intended) |
-
-(*) In the current implementation, fused and fused_prefetched produce identical results.
+| Memory assumption | All from DRAM | Compulsory floor only | Capacity-constrained tile reuse |
+| Typical speedup | 1.0x (baseline) | Diagnostic | Formal target |
+| Realism | Conservative traffic scenario | Optimistic floor | Audited lower bound |
 
 ## 5. Output Fields
 
@@ -174,7 +185,10 @@ total:
   other_ops: 50000                 # Total scalar/vector elementwise/reduction ops
   unfused_elements: 25000000       # Unfused memory elements (all tensor I/O)
   fused_elements: 10000000         # Fused memory elements (intermediates excluded)
-  fused_prefetched_elements: 10000000  # Fused+prefetched elements (same as fused)
+  fused_prefetched_elements: 12000000  # Tile-aware I/O lower-bound elements
+  fused_bytes: 20000000                # Explicit per-tensor compulsory bytes
+  io_lower_bound_bytes: 24000000       # Compulsory + solver excess
+  lower_bound_seconds: 0.000012        # Formal compute/memory lower bound
   model_io_elements: 2500000       # Model input/output elements
   intermediate_elements: 15000000  # Intermediate tensor elements
   weight_elements: 7500000         # Weight tensor elements
@@ -201,48 +215,32 @@ fused:
   bottleneck: memory
 
 fused_prefetched:
-  memory_bytes: 20000000
+  memory_bytes: 24000000
   compute_cycles: 2645
-  memory_cycles: 19619
-  total_cycles: 19619
-  runtime_ms: 0.010
-  arithmetic_intensity: 0.1
+  memory_cycles: 23543
+  total_cycles: 23543
+  runtime_ms: 0.012
+  arithmetic_intensity: 0.083
   bottleneck: memory
 
 speedup:
   fused_vs_unfused: 2.5
-  fused_prefetched_vs_unfused: 2.5
-  fused_prefetched_vs_fused: 1.0
+  fused_prefetched_vs_unfused: 2.08
+  fused_prefetched_vs_fused: 0.83
 ```
 
-## 6. Known Implementation Gaps
+## 6. Known Boundaries
 
-The current implementation has two discrepancies from the original design intent:
+All three diagnostic views use a whole-graph roofline. `unfused` and `fused`
+are useful comparisons, but only schema-v3 `fused_prefetched` backed by a
+complete `capacity_constrained_tile_aware_v1` analysis is accepted as a formal
+benchmark denominator.
 
-### Gap 1: All three models use whole-graph roofline
-
-The original design intended unfused and fused to use **per-op roofline sums**:
-```
-Intended unfused:          Σ_i max(compute_i, memory_i)   (per-op, summed)
-Intended fused:            Σ_i max(compute_i, fused_memory_i)
-Intended fused_prefetched: max(Σ compute, Σ fused_memory)  (whole-graph)
-```
-
-The actual implementation uses whole-graph roofline for all three:
-```
-Actual unfused:            max(Σ compute, Σ unfused_memory)
-Actual fused:              max(Σ compute, Σ fused_memory)
-Actual fused_prefetched:   max(Σ compute, Σ fused_memory)
-```
-
-Per-op-sum is always >= whole-graph roofline (`Σ max(c_i, m_i) >= max(Σ c_i, Σ m_i)`), so the current unfused/fused estimates are more optimistic than intended.
-
-### Gap 2: Fused and fused_prefetched are identical
-
-Both fields are currently assigned the same deduplicated graph-level external
-I/O total. They therefore produce identical fused and fused-prefetched
-runtime/cycle estimates. The two keys remain separate for output-schema
-compatibility with the original pipeline.
+The current formal composition uses pinned single-einsum OAVES proofs. It does
+not add excess traffic across independent regions and does not approximate an
+einsum fed by a materializing internal producer. Those cases require an
+official multi-einsum solver; until then they are recorded as non-applicable
+and a graph with no applicable proof is rejected from scoring.
 
 
 ## Practical Guidance
@@ -253,14 +251,14 @@ compatibility with the original pipeline.
    - Debugging memory bottlenecks
 
 2. **Use Fused** when:
-   - Estimating performance with standard fusion (MIOpen, PyTorch compile, etc.)
-   - Intermediate tensors fit in the relevant on-chip cache hierarchy
-   - Most realistic estimate for modern GPUs
+   - Inspecting the compulsory graph-external I/O floor
+   - Comparing how much traffic a legal fusion plan can remove
+   - Diagnosing solver excess relative to compulsory bytes
 
 3. **Use Fused+Prefetched** when:
-   - Estimating best-case performance
-   - Highly optimized custom kernels
-   - Setting performance targets
+   - The analysis has `bound_kind: capacity_constrained_tile_aware_v1`
+   - Setting the formal workload TSOL target
+   - Auditing the selected capacity point and compute/memory overlap
 
 ## References
 

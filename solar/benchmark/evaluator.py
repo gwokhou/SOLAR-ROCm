@@ -110,29 +110,115 @@ def _clone(value: Any) -> Any:
     return value
 
 
-def _equal(actual: Any, expected: Any, atol: float, rtol: float) -> bool:
+def _equal(
+    actual: Any,
+    expected: Any,
+    atol: float,
+    rtol: float,
+    *,
+    required_matched_ratio: float = 1.0,
+    max_error_cap: float | None = None,
+    allow_negative_inf: bool = False,
+) -> bool:
     try:
         import torch
 
         if isinstance(actual, torch.Tensor) and isinstance(expected, torch.Tensor):
-            return (
-                actual.shape == expected.shape
-                and actual.dtype == expected.dtype
-                and bool(
-                    torch.allclose(
-                        actual, expected, atol=atol, rtol=rtol, equal_nan=True
-                    )
-                )
+            if actual.shape != expected.shape or actual.dtype != expected.dtype:
+                return False
+            if not (actual.is_floating_point() or actual.is_complex()):
+                return bool(torch.equal(actual, expected))
+            calculation_dtype = (
+                torch.complex64 if actual.is_complex() else torch.float32
             )
+            output = actual.to(calculation_dtype)
+            reference = expected.to(calculation_dtype)
+            matching_negative_inf = torch.zeros_like(output, dtype=torch.bool)
+            if allow_negative_inf:
+                matching_negative_inf = torch.isneginf(output) & torch.isneginf(
+                    reference
+                )
+            if bool(
+                ((~torch.isfinite(output)) & ~matching_negative_inf).any()
+                or ((~torch.isfinite(reference)) & ~matching_negative_inf).any()
+            ):
+                return False
+            if reference.norm().item() > 0 and output.norm().item() == 0:
+                return False
+            if allow_negative_inf:
+                finite_mask = ~matching_negative_inf
+                output = output[finite_mask]
+                reference = reference[finite_mask]
+            difference = (output - reference).abs()
+            matched = difference <= atol + rtol * reference.abs()
+            ratio = float(matched.float().mean().item()) if matched.numel() else 1.0
+            if ratio < required_matched_ratio:
+                return False
+            if max_error_cap is not None:
+                if (
+                    difference.numel()
+                    and float(difference.max().item()) > max_error_cap
+                ):
+                    return False
+            return True
     except ImportError:
         pass
     if isinstance(actual, (tuple, list)) and isinstance(expected, (tuple, list)):
         return len(actual) == len(expected) and all(
-            _equal(a, e, atol, rtol) for a, e in zip(actual, expected)
+            _equal(
+                a,
+                e,
+                atol,
+                rtol,
+                required_matched_ratio=required_matched_ratio,
+                max_error_cap=max_error_cap,
+                allow_negative_inf=allow_negative_inf,
+            )
+            for a, e in zip(actual, expected)
         )
     if isinstance(actual, dict) and isinstance(expected, dict):
         return actual.keys() == expected.keys() and all(
-            _equal(actual[key], expected[key], atol, rtol) for key in actual
+            _equal(
+                actual[key],
+                expected[key],
+                atol,
+                rtol,
+                required_matched_ratio=required_matched_ratio,
+                max_error_cap=max_error_cap,
+                allow_negative_inf=allow_negative_inf,
+            )
+            for key in actual
+        )
+    return actual == expected
+
+
+def _identical(actual: Any, expected: Any) -> bool:
+    """Compare benchmark inputs without applying output tolerances."""
+    try:
+        import torch
+
+        if isinstance(actual, torch.Tensor) and isinstance(expected, torch.Tensor):
+            if actual.shape != expected.shape or actual.dtype != expected.dtype:
+                return False
+            if torch.equal(actual, expected):
+                return True
+            if actual.is_floating_point() or actual.is_complex():
+                return bool(
+                    torch.all(
+                        (actual == expected)
+                        | (torch.isnan(actual) & torch.isnan(expected))
+                    )
+                )
+            return False
+    except ImportError:
+        pass
+    if isinstance(actual, (tuple, list)) and isinstance(expected, (tuple, list)):
+        return len(actual) == len(expected) and all(
+            _identical(left, right) for left, right in zip(actual, expected)
+        )
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _identical(actual[key], expected[key]) for key in actual
         )
     return actual == expected
 
@@ -460,6 +546,14 @@ class RocmEvaluator:
                 status="invalid_analysis",
                 failure="workload has no bound SOLAR analysis artifact",
             )
+        architecture_identity = self.architecture.to_dict()
+        architecture_identity.pop("source", None)
+        if analysis.architecture_hash != canonical_hash(architecture_identity):
+            return WorkloadEvaluation(
+                name=workload.name,
+                status="invalid_analysis",
+                failure=("analysis architecture does not match the evaluator profile"),
+            )
         verification = workload.verification
         if verification is None:
             return WorkloadEvaluation(
@@ -500,11 +594,19 @@ class RocmEvaluator:
                 before = _clone(candidate_inputs)
                 expected = reference(*_clone(inputs))
                 actual = guarded_candidate(*candidate_inputs)
-                if not _equal(candidate_inputs, before, workload.atol, workload.rtol):
+                if not _identical(candidate_inputs, before):
                     item.status = "reward_hack"
                     item.failure = "candidate modified benchmark inputs"
                     return item
-                if not _equal(actual, expected, workload.atol, workload.rtol):
+                if not _equal(
+                    actual,
+                    expected,
+                    workload.atol,
+                    workload.rtol,
+                    required_matched_ratio=workload.required_matched_ratio,
+                    max_error_cap=workload.max_error_cap,
+                    allow_negative_inf=workload.allow_negative_inf,
+                ):
                     item.status = "incorrect"
                     item.failure = (
                         f"candidate output differs from reference for seed {seed}"
@@ -534,12 +636,20 @@ class RocmEvaluator:
                 nonlocal timed_call
                 timed_call += 1
                 pristine = pool.take_pristine(args)
-                if not _equal(args, pristine, workload.atol, workload.rtol):
+                if not _identical(args, pristine):
                     raise _TimedCorrectnessError(
                         "reward_hack", "candidate modified timed benchmark inputs"
                     )
                 expected = reference(*_clone(pristine))
-                if not _equal(actual, expected, workload.atol, workload.rtol):
+                if not _equal(
+                    actual,
+                    expected,
+                    workload.atol,
+                    workload.rtol,
+                    required_matched_ratio=workload.required_matched_ratio,
+                    max_error_cap=workload.max_error_cap,
+                    allow_negative_inf=workload.allow_negative_inf,
+                ):
                     raise _TimedCorrectnessError(
                         "incorrect",
                         f"candidate output differs during timed call {timed_call}",
@@ -559,11 +669,19 @@ class RocmEvaluator:
                 before = _clone(candidate_inputs)
                 expected = reference(*_clone(inputs))
                 actual = guarded_candidate(*candidate_inputs)
-                if not _equal(candidate_inputs, before, benchmark.atol, benchmark.rtol):
+                if not _identical(candidate_inputs, before):
                     raise _TimedCorrectnessError(
                         "reward_hack", "candidate modified post-timing inputs"
                     )
-                if not _equal(actual, expected, benchmark.atol, benchmark.rtol):
+                if not _equal(
+                    actual,
+                    expected,
+                    workload.atol,
+                    workload.rtol,
+                    required_matched_ratio=workload.required_matched_ratio,
+                    max_error_cap=workload.max_error_cap,
+                    allow_negative_inf=workload.allow_negative_inf,
+                ):
                     raise _TimedCorrectnessError(
                         "incorrect",
                         f"candidate output differs after timing for seed {seed}",

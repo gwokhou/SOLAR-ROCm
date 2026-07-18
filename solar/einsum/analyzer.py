@@ -138,6 +138,13 @@ class EinsumAnalyzer:
 
         # Strip trailing _<digits> (e.g. Model.clamp_4 -> clamp, div_2 -> div, mul_4 -> mul)
         op = re.sub(r"_\d+$", "", op)
+        if op.endswith("_") and not op.endswith("__"):
+            op = op[:-1]
+
+        # Composite names must be recognized before substring-based
+        # reductions: ``scaled_dot_product_attention`` contains ``prod``.
+        if "scaled_dot_product_attention" in op or op.endswith(".sdpa"):
+            return "scaled_dot_product_attention"
 
         # Transpose Convolutions (check first since they contain conv1d/2d/3d)
         if "convtranspose1d" in op or "conv_transpose1d" in op:
@@ -347,10 +354,12 @@ class EinsumAnalyzer:
             if op_norm == "conv1d":
                 b, _c, l = input_shape
                 o, _c2, k = weight_shape
-                stride = int((kwargs.get("stride") or (1,))[0])
-                padding = int((kwargs.get("padding") or (0,))[0])
-                dilation = int((kwargs.get("dilation") or (1,))[0])
-                l_out = (l + 2 * padding - dilation * (k - 1) - 1) // stride + 1
+                stride_1d = int((kwargs.get("stride") or (1,))[0])
+                padding_1d = int((kwargs.get("padding") or (0,))[0])
+                dilation_1d = int((kwargs.get("dilation") or (1,))[0])
+                l_out = (
+                    l + 2 * padding_1d - dilation_1d * (k - 1) - 1
+                ) // stride_1d + 1
                 return [b, o, l_out]
 
             if op_norm == "conv3d":

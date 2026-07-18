@@ -13,7 +13,7 @@ import hashlib
 import os
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -111,7 +111,7 @@ class OrojenesisRunner:
         }
 
     @staticmethod
-    def _architecture(word_bits: int) -> dict[str, Any]:
+    def architecture(word_bits: int) -> dict[str, Any]:
         return {
             "architecture": {
                 "version": 0.2,
@@ -152,7 +152,7 @@ class OrojenesisRunner:
         }
 
     @staticmethod
-    def _mapper(dimensions: list[str], spaces: list[str]) -> dict[str, Any]:
+    def mapper_config(dimensions: list[str], spaces: list[str]) -> dict[str, Any]:
         return {
             "mapper": {
                 "optimization-metrics": ["last-level-accesses"],
@@ -224,8 +224,8 @@ class OrojenesisRunner:
         spaces = [item["name"] for item in problem["problem"]["shape"]["data-spaces"]]
         inputs = {
             "problem.yaml": problem,
-            "architecture.yaml": self._architecture(word_bits),
-            "mapper.yaml": self._mapper(dimensions, spaces),
+            "architecture.yaml": self.architecture(word_bits),
+            "mapper.yaml": self.mapper_config(dimensions, spaces),
         }
         paths: dict[str, Path] = {}
         for name, data in inputs.items():
@@ -261,14 +261,23 @@ class OrojenesisRunner:
         return {
             "solver": "NVlabs/timeloop oaves_keep_max",
             "commit": OROJENESIS_COMMIT,
+            "word_bits": int(word_bits),
             "curve": curve,
-            "input_sha256": {name: _sha256(path) for name, path in paths.items()},
-            "output_sha256": _sha256(raw),
+            "evidence_files": {
+                **{
+                    name: {"path": name, "sha256": _sha256(path)}
+                    for name, path in paths.items()
+                },
+                "curve": {
+                    "path": raw.name,
+                    "sha256": _sha256(raw),
+                },
+            },
         }
 
 
 def select_capacity_point(
-    curve: list[Mapping[str, Any]], capacity_bytes: int
+    curve: Sequence[Mapping[str, Any]], capacity_bytes: int
 ) -> dict[str, Any] | None:
     candidates = [
         point for point in curve if int(point["buffer_bytes"]) <= capacity_bytes

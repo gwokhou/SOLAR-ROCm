@@ -5,7 +5,11 @@
 
 SOLAR keeps the paper's published lower bound authoritative:
 
-`TSOL = max(Σp(2 × MACp / published peak throughputp), fused bytes / published memory bandwidth)`
+`TSOL = max(Σp(2 × MACp / published peak throughputp), io_lower_bound_bytes / published memory bandwidth)`
+
+`io_lower_bound_bytes` is the deduplicated graph-external compulsory traffic
+plus the safely composable capacity-constrained Orojenesis excess. Plain
+`fused_bytes` remains a diagnostic compulsory-I/O component.
 
 Calibration reports measured throughput separately as `calibrated_solar`; it
 never changes the formal denominator. A score is emitted only when correctness
@@ -21,8 +25,8 @@ passes, the baseline environment matches exactly, and AMD-SMI reports
 `benchmark.yaml` defines a reference Python source with `get_inputs(workload,
 device)` and `run(*inputs)`, one or more workloads, tolerance, precision, and
 either `cold` or `application` cache behavior. The latest and only accepted
-benchmark contract is `schema_version: 2`. Each workload must reference a
-schema-v2 `analysis.yaml`, its source `einsum_graph.yaml`, and a hash-bound
+benchmark contract is `schema_version: 3`. Each compatible workload must reference a
+schema-v3 `analysis.yaml`, its source `einsum_graph.yaml`, and a hash-bound
 `verification.yaml` in-toto statement. The statement binds the reference
 source, graph, workload parameters, tolerance, and replayable numerical cases;
 the loader reruns those cases before TSOL or SOL Score can be emitted. Manual
@@ -31,9 +35,12 @@ artifact contains per-tensor byte traffic and MAC totals grouped by actual
 operation precision; the evaluator records the artifact, graph, benchmark,
 reference, architecture, solution, and environment identities in the bound
 report chain. Loading a benchmark deterministically reruns the analyzer on the
-bound graph and compares FLOPs, fused bytes, and the precision breakdown. A
-schema-v2 benchmark is rejected if any traffic-bearing tensor lacks an explicit
-dtype; neighboring quantization sidecars cannot override the artifact.
+bound graph and compares FLOPs, fused bytes, and the precision breakdown. It
+also revalidates the pinned Orojenesis inputs/raw curve and requires the
+analysis architecture identity to equal the evaluator profile. A schema-v3
+benchmark is rejected if any traffic-bearing tensor lacks an explicit dtype or
+executable semantic record; neighboring quantization sidecars cannot override
+the artifact.
 
 The evaluator injects changing integer seeds and runs ten fresh correctness
 rounds before timing. Timed calls receive non-repeating aligned tensor

@@ -26,6 +26,7 @@ Based on:
 
 from __future__ import annotations
 
+import operator
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
@@ -141,12 +142,17 @@ class BackwardProcessor:
             output_loss_index=0,
         )
         graph = self._serialize_aot_joint_graph(joint_module, signature, model_name)
-        self._verify_aot_joint_gradients(
-            wrapper, joint_module, signature, tuple(inputs_with_grad)
-        )
         destination = ensure_directory(output_dir) / "joint_graph.yaml"
         destination.write_text(yaml.safe_dump(graph, sort_keys=False))
-        return graph
+        serialized_graph = yaml.safe_load(destination.read_text())
+        self._verify_aot_joint_gradients(
+            wrapper,
+            joint_module,
+            serialized_graph,
+            signature,
+            tuple(inputs_with_grad),
+        )
+        return serialized_graph
 
     @staticmethod
     def _serialize_argument(value: Any, inputs: list[Any]) -> Any:
@@ -181,8 +187,82 @@ class BackwardProcessor:
             return result
         return []
 
+    @staticmethod
+    def _schema_effects(
+        node: Any,
+        input_nodes: list[Any],
+        *,
+        target_name: str,
+        exact_target: str,
+        output_arity: int,
+    ) -> dict[str, Any]:
+        """Translate an ATen FunctionSchema alias contract to executable IR."""
+        schema = getattr(node.target, "_schema", None)
+        if schema is None:
+            raise RuntimeError(f"AOT target has no FunctionSchema: {node.target}")
+
+        def tensor_indices(value: Any) -> set[int]:
+            import torch.fx
+
+            if isinstance(value, torch.fx.Node):
+                return {input_nodes.index(value)}
+            if isinstance(value, (tuple, list)):
+                return {index for item in value for index in tensor_indices(item)}
+            if isinstance(value, dict):
+                return {
+                    index for item in value.values() for index in tensor_indices(item)
+                }
+            return set()
+
+        positional = list(node.args)
+        aliases_by_input: dict[int, set[str]] = {}
+        mutations: set[int] = set()
+        for position, argument in enumerate(schema.arguments):
+            if position < len(positional):
+                value = positional[position]
+            elif argument.name in node.kwargs:
+                value = node.kwargs[argument.name]
+            else:
+                continue
+            indices = tensor_indices(value)
+            alias_info = argument.alias_info
+            if alias_info is None:
+                continue
+            for index in indices:
+                aliases_by_input.setdefault(index, set()).update(
+                    str(item) for item in alias_info.before_set
+                )
+                aliases_by_input[index].update(
+                    str(item) for item in alias_info.after_set
+                )
+                if alias_info.is_write:
+                    mutations.add(index)
+
+        aliases: list[dict[str, int]] = []
+        for output_index, returned in enumerate(schema.returns):
+            if output_index >= output_arity or returned.alias_info is None:
+                continue
+            returned_sets = {
+                *(str(item) for item in returned.alias_info.before_set),
+                *(str(item) for item in returned.alias_info.after_set),
+            }
+            for input_index, input_sets in aliases_by_input.items():
+                if returned_sets & input_sets:
+                    aliases.append({"output": output_index, "input": input_index})
+
+        if target_name.endswith("_") and not mutations and input_nodes:
+            raise RuntimeError(
+                f"mutating ATen target lacks a schema write effect: {node.target}"
+            )
+        return {
+            "mutates": sorted(mutations),
+            "aliases": aliases,
+            "atomic": exact_target in {"scatter", "index_put", "index_add"},
+            "opaque_library_call": False,
+        }
+
     def _serialize_aot_joint_graph(
-        self, graph_module: nn.Module, signature: Any, model_name: str
+        self, graph_module: Any, signature: Any, model_name: str
     ) -> Dict[str, Any]:
         import torch.fx
 
@@ -214,11 +294,15 @@ class BackwardProcessor:
                 visit(node)
 
         layers: dict[str, Any] = {}
+        node_output_names: dict[torch.fx.Node, list[str]] = {}
         for node in nodes:
             if node.op == "output":
                 continue
             metadata = self._tensor_metadata(node.meta.get("val"))
             if node.op == "placeholder":
+                if len(metadata) != 1:
+                    raise RuntimeError(f"AOT placeholder {node.name} is not one tensor")
+                node_output_names[node] = [node.name]
                 layers[node.name] = {
                     "type": "start",
                     "phase": "input",
@@ -245,6 +329,63 @@ class BackwardProcessor:
                 continue
             if node.op != "call_function":
                 raise RuntimeError(f"unsupported AOT node kind: {node.op}")
+            if node.target is operator.getitem:
+                source, selected = node.args
+                if not isinstance(source, torch.fx.Node) or not isinstance(
+                    selected, int
+                ):
+                    raise RuntimeError(
+                        f"AOT getitem {node.name} is not a fixed tensor selection"
+                    )
+                source_names = node_output_names.get(source) or []
+                try:
+                    selected_name = source_names[selected]
+                except IndexError as exc:
+                    raise RuntimeError(
+                        f"AOT getitem {node.name} selects an unavailable output"
+                    ) from exc
+                node_output_names[node] = [node.name]
+                layers[node.name] = {
+                    "type": "identity",
+                    "phase": "forward" if node in forward_nodes else "backward",
+                    "semantic_op": {
+                        "kind": "aten",
+                        "target": "identity",
+                        "overload": "default",
+                        "arguments": [{"tensor": 0}],
+                        "kwargs": {},
+                        "effects": {
+                            "mutates": [],
+                            "aliases": [{"output": 0, "input": 0}],
+                            "atomic": False,
+                            "opaque_library_call": False,
+                        },
+                    },
+                    "is_real_einsum": False,
+                    "is_einsum_supportable": True,
+                    "einsum_equation": "",
+                    "elementwise_op": "none",
+                    "reduction_op": "none",
+                    "tensor_names": {
+                        "inputs": [selected_name],
+                        "outputs": [node.name],
+                    },
+                    "tensor_shapes": {
+                        "inputs": [metadata[0][0]],
+                        "outputs": [metadata[0][0]],
+                    },
+                    "tensor_dtypes": {
+                        "inputs": [metadata[0][1]],
+                        "outputs": [metadata[0][1]],
+                    },
+                    "connections": {
+                        "inputs": [source.name],
+                        "outputs": [
+                            item.name for item in node.users if item.op != "output"
+                        ],
+                    },
+                }
+                continue
             target_text = str(node.target)
             parts = target_text.split(".")
             if len(parts) < 3 or parts[-3] != "aten":
@@ -255,6 +396,22 @@ class BackwardProcessor:
                 target_name.rstrip("_"), target_name.rstrip("_")
             )
             input_nodes = list(node.all_input_nodes)
+            if any(
+                len(node_output_names.get(predecessor) or []) != 1
+                for predecessor in input_nodes
+            ):
+                raise RuntimeError(
+                    f"AOT node {node.name} consumes a structured tensor value; "
+                    "explicit getitem lowering is required"
+                )
+            output_tensor_names = (
+                [node.name]
+                if len(metadata) == 1
+                else [f"{node.name}.{i}" for i in range(len(metadata))]
+            )
+            if not output_tensor_names:
+                raise RuntimeError(f"AOT node {node.name} has no tensor outputs")
+            node_output_names[node] = output_tensor_names
             semantic = {
                 "kind": "aten",
                 "target": exact_target,
@@ -266,12 +423,13 @@ class BackwardProcessor:
                     str(key): self._serialize_argument(value, input_nodes)
                     for key, value in node.kwargs.items()
                 },
-                "effects": {
-                    "mutates": [0] if target_name.endswith("_") else [],
-                    "aliases": [],
-                    "atomic": exact_target in {"scatter", "index_put", "index_add"},
-                    "opaque_library_call": False,
-                },
+                "effects": self._schema_effects(
+                    node,
+                    input_nodes,
+                    target_name=target_name,
+                    exact_target=exact_target,
+                    output_arity=len(metadata),
+                ),
             }
             layers[node.name] = {
                 "type": target_name.rstrip("_"),
@@ -283,12 +441,10 @@ class BackwardProcessor:
                 "elementwise_op": "none",
                 "reduction_op": "none",
                 "tensor_names": {
-                    "inputs": [predecessor.name for predecessor in input_nodes],
-                    "outputs": (
-                        [node.name]
-                        if len(metadata) == 1
-                        else [f"{node.name}.{i}" for i in range(len(metadata))]
-                    ),
+                    "inputs": [
+                        node_output_names[predecessor][0] for predecessor in input_nodes
+                    ],
+                    "outputs": output_tensor_names,
                 },
                 "tensor_shapes": {
                     "inputs": [
@@ -329,12 +485,16 @@ class BackwardProcessor:
             "schema_version": 3,
             "model_name": model_name,
             "joint_graph": True,
+            "outputs": output_names,
             "layers": layers,
             "graph_signature": {
                 "parameters": list(signature.parameters),
                 "buffers": list(signature.buffers),
                 "user_inputs": list(signature.user_inputs),
                 "user_outputs": list(signature.user_outputs),
+                "buffers_to_mutate": dict(signature.buffers_to_mutate),
+                "parameters_to_mutate": dict(signature.parameters_to_mutate),
+                "user_inputs_to_mutate": dict(signature.user_inputs_to_mutate),
                 "loss_output": backward.loss_output,
                 "gradients_to_parameters": dict(backward.gradients_to_parameters),
                 "gradients_to_user_inputs": dict(backward.gradients_to_user_inputs),
@@ -351,7 +511,8 @@ class BackwardProcessor:
     @staticmethod
     def _verify_aot_joint_gradients(
         wrapper: nn.Module,
-        joint_module: nn.Module,
+        joint_module: Any,
+        graph: dict[str, Any],
         signature: Any,
         inputs: tuple[Any, ...],
     ) -> None:
@@ -373,12 +534,64 @@ class BackwardProcessor:
                 )
             else:
                 arguments.append(next(user_iter))
-        actual_outputs = tuple(joint_module(*arguments))
+
+        def clone_value(value: Any) -> Any:
+            if isinstance(value, torch.Tensor):
+                result = value.detach().clone()
+                result.requires_grad_(value.requires_grad)
+                return result
+            return value
+
+        raw_arguments = [clone_value(value) for value in arguments]
+        serialized_arguments = [clone_value(value) for value in arguments]
+        actual_outputs = tuple(joint_module(*raw_arguments))
         output_node = next(
             node for node in joint_module.graph.nodes if node.op == "output"
         )
         output_names = [node.name for node in output_node.args[0]]
         actual_by_name = dict(zip(output_names, actual_outputs))
+
+        from solar.verification import EinsumGraphExecutor
+
+        serialized_outputs = EinsumGraphExecutor(graph)(*serialized_arguments)
+        serialized_outputs = (
+            tuple(serialized_outputs)
+            if isinstance(serialized_outputs, (tuple, list))
+            else (serialized_outputs,)
+        )
+        if len(serialized_outputs) != len(actual_outputs):
+            raise RuntimeError("serialized AOT joint output arity mismatch")
+        serialized_by_name = dict(zip(output_names, serialized_outputs))
+        for output_name, actual_value in actual_by_name.items():
+            serialized_value = serialized_by_name[output_name]
+            torch.testing.assert_close(serialized_value, actual_value, equal_nan=True)
+        for raw_argument, serialized_argument in zip(
+            raw_arguments, serialized_arguments
+        ):
+            if isinstance(raw_argument, torch.Tensor):
+                torch.testing.assert_close(
+                    serialized_argument, raw_argument, equal_nan=True
+                )
+
+        def storage_relation(values: list[Any]) -> tuple[tuple[bool, ...], ...]:
+            def aliases(left: Any, right: Any) -> bool:
+                if not isinstance(left, torch.Tensor) or not isinstance(
+                    right, torch.Tensor
+                ):
+                    return False
+                return (
+                    left is right
+                    or left.untyped_storage()._cdata == right.untyped_storage()._cdata
+                )
+
+            return tuple(
+                tuple(aliases(left, right) for right in values) for left in values
+            )
+
+        raw_values = [*raw_arguments, *actual_outputs]
+        serialized_values = [*serialized_arguments, *serialized_outputs]
+        if storage_relation(raw_values) != storage_relation(serialized_values):
+            raise RuntimeError("serialized AOT joint alias relationships drifted")
 
         reference_loss = wrapper(*inputs)[0]
         differentiable: list[torch.Tensor] = [
@@ -395,7 +608,7 @@ class BackwardProcessor:
             *signature.backward_signature.gradients_to_parameters,
             *signature.backward_signature.gradients_to_user_inputs,
         ]
-        actual = [actual_by_name[name] for name in gradient_names]
+        actual = [serialized_by_name[name] for name in gradient_names]
         if len(actual) != len(expected):
             raise RuntimeError("AOT joint gradient arity mismatch")
         for expected_value, actual_value in zip(expected, actual):
@@ -414,6 +627,7 @@ class BackwardProcessor:
         target: torch.Tensor,
         output_dir: str,
         model_name: str,
+        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     ) -> Optional[Dict[str, Any]]:
         """Extract backward graph using torchview.
 
@@ -533,7 +747,7 @@ class BackwardProcessor:
                     )
 
                     # Process the graph to extract backward operations
-                    backward_graph = self._extract_backward_from_torchview_graph(
+                    self._extract_backward_from_torchview_graph(
                         graph, model, inputs_with_grad, output_dir, model_name
                     )
 
@@ -715,7 +929,10 @@ class BackwardProcessor:
         This extracts the actual torch function calls from the FX graph.
         """
         try:
-            backward_graph = {"model_name": f"{model_name}_backward", "layers": {}}
+            backward_graph: Dict[str, Any] = {
+                "model_name": f"{model_name}_backward",
+                "layers": {},
+            }
 
             # Extract nodes from FX graph
             node_counter = 0
@@ -931,11 +1148,14 @@ class BackwardProcessor:
             loss.backward()
 
             # Build backward graph structure
-            backward_graph = {"model_name": f"{model_name}_backward", "layers": {}}
+            backward_graph: Dict[str, Any] = {
+                "model_name": f"{model_name}_backward",
+                "layers": {},
+            }
 
             # Traverse the grad_fn chain from loss to extract backward operations
-            visited_grad_fns = {}
-            backward_op_nodes = []
+            visited_grad_fns: Dict[int, str] = {}
+            backward_op_nodes: List[str] = []
 
             def traverse_grad_fn(grad_fn, node_name_prefix="backward", depth=0):
                 """Recursively traverse grad_fn chain to extract backward operations."""
@@ -1078,10 +1298,10 @@ class BackwardProcessor:
 
             # Connect backward operations - update outputs for each node based on inputs
             # For each backward operation, find which nodes use it as input
-            node_to_outputs = {}
+            node_to_outputs: Dict[str, List[str]] = {}
             for node_id, node_data in backward_graph["layers"].items():
-                inputs = node_data["connections"]["inputs"]
-                for input_node in inputs:
+                connection_inputs = node_data["connections"]["inputs"]
+                for input_node in connection_inputs:
                     if input_node not in node_to_outputs:
                         node_to_outputs[input_node] = []
                     if node_id not in node_to_outputs[input_node]:

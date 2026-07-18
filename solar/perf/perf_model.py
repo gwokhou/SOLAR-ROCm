@@ -23,7 +23,8 @@ Three SOL (Speed-of-Light) traffic scenarios are computed with a whole-graph
 roofline:
 1. Unfused: all operation tensor traffic is charged to DRAM
 2. Fused: only deduplicated model-boundary I/O is charged to DRAM
-3. Fused+Prefetched: retained compatibility view of the same deduplicated I/O
+3. Fused+Prefetched: the formal tile-aware I/O lower bound when present,
+   otherwise a compatibility fallback to deduplicated I/O
 
 See SOL_GUIDE.md for detailed explanation.
 """
@@ -48,7 +49,7 @@ class EinsumGraphPerfModel:
     Computes three whole-graph roofline traffic scenarios:
     - unfused: all operation tensor traffic
     - fused: deduplicated model-boundary I/O
-    - fused_prefetched: compatibility view of the fused traffic total
+    - fused_prefetched: capacity-constrained tile-aware traffic when present
     """
 
     def __init__(self, debug: bool = False) -> None:

@@ -62,11 +62,14 @@ from solar.common.utils import (
 )
 from solar.einsum.af_graph_builder import build_af_graph_from_dict
 from solar.einsum.analyzer import EinsumAnalyzer
-from solar.einsum.einsum_rank_renamer import EinsumRankRenamer
 from solar.einsum.einsum_to_taco import add_taco_expressions
 from solar.einsum.ops.base import EinsumOp, EinsumOperand
 from solar.einsum.ops.registry import get_global_registry
-from solar.einsum.semantics import annotate_semantics, validate_semantic_graph
+from solar.einsum.semantics import (
+    SUPPORTED_ATEN_TARGETS,
+    annotate_semantics,
+    validate_semantic_graph,
+)
 
 PathLike = Union[str, Path]
 
@@ -459,6 +462,7 @@ class PyTorchToEinsum:
         Returns:
             Tuple of (reduction_dims, keepdim). reduction_dims is a list of ints or None.
         """
+        reduce_dims: Optional[List[int]]
         # First check parsed dim/keepdim fields (from _parse_torchview_attributes)
         if "dim" in module_args:
             dim_val = module_args["dim"]
@@ -530,6 +534,17 @@ class PyTorchToEinsum:
                 shapes.append(None)
         return shapes
 
+    @staticmethod
+    def _tensor_arg_dtypes_from_raw(module_args: Dict[str, Any]) -> List[str]:
+        """Return exact positional tensor dtypes recorded by torchview."""
+        raw = module_args.get("raw_attributes", "") if module_args else ""
+        return [
+            f"torch.{match}"
+            for match in re.findall(
+                r"Tensor\(shape=\([^)]*\),\s*dtype=torch\.([A-Za-z0-9_]+)\)", raw
+            )
+        ]
+
     # ----- torchview-quirk constants ---------------------------------------
     # Layer types whose output dtype passes through unchanged from the first
     # input (no real compute, no precision change). Used by the dtype repair
@@ -592,6 +607,26 @@ class PyTorchToEinsum:
         "byte": 8,
         "bool": 1,
     }
+    _OUTPUT_DTYPE_INPUT_INDEX: "dict[str, int]" = {
+        "embedding": 1,
+        "embedding_bag": 1,
+        "gather": 0,
+        "scatter": 0,
+        "where": 1,
+    }
+    _PARAMETER_TENSOR_INDICES: "dict[str, set[int]]" = {
+        "batch_norm": {1, 2, 3, 4},
+        "conv1d": {1, 2},
+        "conv2d": {1, 2},
+        "conv3d": {1, 2},
+        "conv_transpose1d": {1, 2},
+        "conv_transpose2d": {1, 2},
+        "conv_transpose3d": {1, 2},
+        "embedding": {1},
+        "group_norm": {1, 2},
+        "layer_norm": {1, 2},
+        "linear": {1, 2},
+    }
 
     @classmethod
     def _bits_of_dtype(cls, dtype_str: Optional[str]) -> int:
@@ -646,6 +681,66 @@ class PyTorchToEinsum:
         """
         self._tensor_to_producer_op = {}
         op_id_set = set(op_ids)
+
+        # torchview may omit module parameters from the bipartite graph even
+        # though its exact call record still contains them. Materialize those
+        # tensor arguments as explicit producerless weight inputs. They remain
+        # external graph inputs and therefore must be supplied by any exact
+        # replay; parameter values are never embedded or guessed.
+        for op_id in op_ids:
+            odata = layers.get(op_id) or {}
+            op_type = str(odata.get("type", "")).lower()
+            parameter_indices = self._PARAMETER_TENSOR_INDICES.get(op_type, set())
+            if not parameter_indices:
+                continue
+            raw_shapes = self._tensor_arg_shapes_from_raw(
+                odata.get("module_args") or {}
+            )
+            raw_dtypes = self._tensor_arg_dtypes_from_raw(
+                odata.get("module_args") or {}
+            )
+            input_shapes = odata.setdefault("input_shapes", [])
+            input_dtypes = odata.setdefault("input_dtypes", [])
+            input_types = odata.setdefault("input_types", [])
+            input_connections = odata.setdefault("connections", {}).setdefault(
+                "inputs", []
+            )
+            for index in sorted(parameter_indices):
+                if index < len(input_shapes) or index >= len(raw_shapes):
+                    continue
+                shape = raw_shapes[index]
+                if shape is None or index >= len(raw_dtypes):
+                    raise ConversionError(
+                        f"cannot recover exact parameter metadata for {op_id}"
+                    )
+                if index != len(input_shapes):
+                    raise ConversionError(
+                        f"parameter tensor order is incomplete for {op_id}"
+                    )
+                input_shapes.append(list(shape))
+                input_dtypes.append(raw_dtypes[index])
+                input_types.append("weight")
+                input_connections.append(f"{op_id}.auxiliary-tensor_{index}")
+
+        # Torchview tensor nodes can carry the process default dtype instead
+        # of the actual dtype (notably integer gather indices).  The recorded
+        # call signature contains the runtime dtype of every tensor argument,
+        # so repair both the consumer slots and their source tensor nodes.
+        for op_id in op_ids:
+            odata = layers.get(op_id) or {}
+            raw_dtypes = self._tensor_arg_dtypes_from_raw(
+                odata.get("module_args") or {}
+            )
+            input_shapes = odata.get("input_shapes") or []
+            if raw_dtypes and len(raw_dtypes) == len(input_shapes):
+                odata["input_dtypes"] = list(raw_dtypes)
+                input_tensors = (odata.get("connections") or {}).get("inputs") or []
+                if len(input_tensors) == len(raw_dtypes):
+                    for tensor_id, dtype in zip(input_tensors, raw_dtypes):
+                        if tensor_id in layers and tensor_id not in op_id_set:
+                            tensor = layers[tensor_id]
+                            output_count = len(tensor.get("output_shapes") or []) or 1
+                            tensor["output_dtypes"] = [dtype] * output_count
 
         # --- (A+B prep) Index orphan / dead-end tensor nodes --------------
         # The shape/dtype of a tensor node is normally its own
@@ -728,6 +823,43 @@ class PyTorchToEinsum:
                     if op_id not in tout:
                         tout.append(op_id)
 
+        # Tensor-valued keyword arguments (for example an SDPA mask) can be
+        # present in the exact signature without a torchview edge. After the
+        # producer-repair pass above has claimed every unambiguous internal
+        # tensor, preserve remaining suffix arguments as explicit external
+        # inputs. This is fail-closed: replay must supply their values.
+        for op_id in op_ids:
+            odata = layers.get(op_id) or {}
+            raw_shapes = self._tensor_arg_shapes_from_raw(
+                odata.get("module_args") or {}
+            )
+            raw_dtypes = self._tensor_arg_dtypes_from_raw(
+                odata.get("module_args") or {}
+            )
+            input_shapes = odata.setdefault("input_shapes", [])
+            input_dtypes = odata.setdefault("input_dtypes", [])
+            input_types = odata.setdefault("input_types", [])
+            input_connections = odata.setdefault("connections", {}).setdefault(
+                "inputs", []
+            )
+            if len(input_shapes) > len(raw_shapes):
+                continue
+            parameter_indices = self._PARAMETER_TENSOR_INDICES.get(
+                str(odata.get("type", "")).lower(), set()
+            )
+            for index in range(len(input_shapes), len(raw_shapes)):
+                shape = raw_shapes[index]
+                if shape is None or index >= len(raw_dtypes):
+                    raise ConversionError(
+                        f"cannot recover exact tensor argument metadata for {op_id}"
+                    )
+                input_shapes.append(list(shape))
+                input_dtypes.append(raw_dtypes[index])
+                input_types.append("weight" if index in parameter_indices else "input")
+                input_connections.append(f"{op_id}.auxiliary-tensor_{index}")
+            if raw_dtypes and len(raw_dtypes) == len(input_shapes):
+                odata["input_dtypes"] = list(raw_dtypes)
+
         # --- (B) Split tensor-node pairs ----------------------------------
         for key, orphan_ids in orphans_by_key.items():
             de_list = [
@@ -775,7 +907,12 @@ class PyTorchToEinsum:
             if in_dtypes:
                 odata["input_dtypes"] = in_dtypes
             layer_type = (odata.get("type") or "").lower()
-            if layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
+            if (
+                layer_type in self._OUTPUT_DTYPE_INPUT_INDEX
+                and len(in_dtypes) > self._OUTPUT_DTYPE_INPUT_INDEX[layer_type]
+            ):
+                widest = in_dtypes[self._OUTPUT_DTYPE_INPUT_INDEX[layer_type]]
+            elif layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
                 widest = (
                     in_dtypes[0]
                     if in_dtypes
@@ -890,7 +1027,7 @@ class PyTorchToEinsum:
         )
 
         # Optional complex operation expansion
-        if expand_complex_ops:
+        if expand_complex_ops and not self._strict:
             op_graph = self._expand_complex_ops(op_graph)
 
         # Build einsum graph dictionary
@@ -930,19 +1067,16 @@ class PyTorchToEinsum:
             print(f"✅ Wrote einsum graph: {out_path}")
 
         renamed_path = out_dir / "einsum_graph_renamed.yaml"
-        if enable_rename:
-            renamer = EinsumRankRenamer(debug=self._debug)
-            renamer.rename(einsum_graph, renamed_path)
-            if self._debug:
-                print(f"✅ Wrote renamed einsum graph: {renamed_path}")
-        else:
-            import shutil
+        import shutil
 
-            shutil.copy2(out_path, renamed_path)
-            if self._debug:
-                print(
-                    f"✅ Copied einsum graph as renamed (rename disabled): {renamed_path}"
-                )
+        shutil.copy2(out_path, renamed_path)
+        if self._debug:
+            mode = (
+                "requested legacy rename is obsolete"
+                if enable_rename
+                else "rename disabled"
+            )
+            print(f"✅ Copied einsum graph as renamed ({mode}): {renamed_path}")
 
         # Principled AccelForge graph emission via one union-find pass
         # over the stage-2 einsum graph. Replaces the historical
@@ -1383,7 +1517,11 @@ class PyTorchToEinsum:
         else:
             node_type = str(node_type).lower()
 
-        return node_type in {"scaled_dot_product_attention", "sdpa", "attention"}
+        return not self._strict and node_type in {
+            "scaled_dot_product_attention",
+            "sdpa",
+            "attention",
+        }
 
     def _should_expand_lstm(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is an LSTM that should be expanded."""
@@ -1533,7 +1671,6 @@ class PyTorchToEinsum:
                 "outputs": [scale_node_id],
             },
         }
-
         # 2. Scale by 1/sqrt(d_k)
         subgraph[scale_node_id] = {
             "type": "mul",
@@ -1831,7 +1968,7 @@ class PyTorchToEinsum:
         weight_conn = None
         for idx, conn in enumerate(input_connections):
             itype = input_types[idx] if idx < len(input_types) else "input"
-            if str(itype).lower() == "weight" or "parameter-tensor" in conn:
+            if str(itype).lower() == "weight" or "parameter-tensor" in str(conn):
                 if weight_conn is None:
                     weight_conn = conn
             elif activation_conn is None:
@@ -3439,27 +3576,38 @@ class PyTorchToEinsum:
                     operand.name: operand.dims for operand in einsum_op.operands
                 }
             except Exception as exc:
-                if self._strict:
+                # An executable ATen semantic operation does not need a fake
+                # einsum equation.  Keep cost representation empty and let
+                # the exact ordered call signature drive verification.
+                if self._strict and node_type in SUPPORTED_ATEN_TARGETS:
+                    equation = ""
+                    elementwise_op = "none"
+                    reduction_op = "none"
+                    is_real_einsum = False
+                    is_einsum_supportable = True
+                    operands = {}
+                elif self._strict:
                     raise ConversionError(
                         f"cannot exactly convert {node_id} ({node_type}): {exc}"
                     ) from exc
-                equation = ""
-                is_einsum_supportable = self._is_operation_supportable(node_type)
+                else:
+                    equation = ""
+                    is_einsum_supportable = self._is_operation_supportable(node_type)
 
-                # Set default ops based on node type
-                if node_type in {"add", "sub", "mul", "div"}:
+                # Set legacy diagnostic ops only outside strict semantic mode.
+                if not self._strict and node_type in {"add", "sub", "mul", "div"}:
                     elementwise_op = node_type
                     reduction_op = "none"
                     is_real_einsum = False
-                elif node_type in {"sum", "mean"}:
+                elif not self._strict and node_type in {"sum", "mean"}:
                     elementwise_op = "copy"
                     reduction_op = "add"
                     is_real_einsum = False
-                elif node_type == "prod":
+                elif not self._strict and node_type == "prod":
                     elementwise_op = "copy"
                     reduction_op = "mul"
                     is_real_einsum = False
-                elif node_type in {"max", "min"}:
+                elif not self._strict and node_type in {"max", "min"}:
                     elementwise_op = "copy"
                     reduction_op = node_type
                     is_real_einsum = False
@@ -3545,11 +3693,17 @@ class PyTorchToEinsum:
                     f"shape-match uniquely."
                 )
 
+        if any(connection is None for connection in input_connections):
+            raise ValueError(f"{node_id}: unresolved tensor input after reconciliation")
+        resolved_input_connections = [
+            str(connection) for connection in input_connections
+        ]
+
         # Take tensor input/output types directly from PyTorch graph by index.
         pytorch_input_types = list(node_data.get("input_types") or [])
-        if len(pytorch_input_types) < len(input_connections):
+        if len(pytorch_input_types) < len(resolved_input_connections):
             pytorch_input_types.extend(
-                ["input"] * (len(input_connections) - len(pytorch_input_types))
+                ["input"] * (len(resolved_input_connections) - len(pytorch_input_types))
             )
 
         # Inject input_types into node_data so downstream functions can use it.
@@ -3560,7 +3714,10 @@ class PyTorchToEinsum:
 
         # Build tensor_names using input_types
         tensor_names = self._build_tensor_names(
-            node_id, node_data_with_types, input_connections, output_connections
+            node_id,
+            node_data_with_types,
+            resolved_input_connections,
+            output_connections,
         )
         pytorch_output_types = list(node_data.get("output_types") or [])
         if len(pytorch_output_types) < len(tensor_names.get("outputs", [])):
@@ -3634,13 +3791,35 @@ class PyTorchToEinsum:
                 "outputs": output_connections,
             },
         }
+        source_target = str(node_type_raw).lower().rsplit(".", maxsplit=1)[-1]
+        source_target = re.sub(r"_\d+$", "", source_target)
+        if source_target.endswith("_") and not source_target.endswith("__"):
+            result["mutates_inputs"] = True
+        if self._strict and node_type in {
+            "conv1d",
+            "conv2d",
+            "conv3d",
+            "convtranspose1d",
+            "convtranspose2d",
+            "convtranspose3d",
+            "conv_transpose1d",
+            "conv_transpose2d",
+            "conv_transpose3d",
+            "scaled_dot_product_attention",
+        }:
+            # These operations have useful extended-einsum cost equations,
+            # but their complete semantics also depend on stride/padding or
+            # attention scale/mask/causal parameters. Exact replay must call
+            # ATen with the recorded signature rather than execute only the
+            # cost equation.
+            result["force_aten_semantics"] = True
 
         semantic_args = {
             str(key): value
             for key, value in module_args.items()
             if key != "raw_attributes"
             and value is not None
-            and isinstance(value, (bool, int, float, str, list, tuple))
+            and isinstance(value, (bool, int, float, str, list, tuple, dict))
         }
         if semantic_args:
             result["module_args"] = semantic_args

@@ -54,19 +54,23 @@ prediction.
 
 ## Source-to-SOL trusted chain
 
-`benchmark.yaml` uses only `schema_version: 2`. Each workload must bind:
+`benchmark.yaml` uses only `schema_version: 3`. Each compatible workload must bind:
 
 ```text
 reference.py --SHA-256--> verification.yaml --SHA-256--> einsum_graph.yaml
                                                      └--> analysis.yaml
+                                                           ├--> fusion proof
+                                                           └--> Orojenesis inputs/raw curve
 ```
 
 The attestation is not accepted merely because it says `passed`: loading a
 benchmark verifies its hash, validates every in-toto subject and predicate
 binding, then reruns the exact recorded cases on the recorded CPU or ROCm
-device. Analysis is independently rerun from the same graph. If any link is
-absent, stale, unsupported, or numerically different, TSOL and SOL Score are
-withheld.
+device. Analysis is independently rerun from the same graph; the loader also
+recreates the pinned solver inputs, reparses the hash-bound raw curve, and
+rederives its capacity point, formal applicability, I/O/time bound, and AMD
+architecture identity. If any link is absent, stale, unsupported, or
+numerically different, TSOL and SOL Score are withheld.
 
 Create or refresh all attestations after changing a reference, graph, or
 workload parameters:
@@ -78,12 +82,15 @@ solar-verify-source-to-sol \
   --update-manifest
 ```
 
-The conversion and analysis CLIs have an `--official` mode. It rejects empty
-equations, unsupported operations, missing per-tensor dtypes, implicit dtype
-fallback, and unverified LLM-generated handlers. Generated handlers are only
-cached after the built-in verifier compares their executable subgraph against
-the resolved PyTorch operation on independent random, zero, and boundary
-inputs.
+The conversion and analysis CLIs have an `--official` mode. It requires the
+schema-v3 executable semantic IR and rejects empty equations, unknown-to-copy
+fallback, incomplete operation arguments/effects, missing per-tensor dtypes,
+implicit dtype fallback, and unverified LLM-generated handlers. Generated
+handlers are only cached after the built-in verifier compares their executable
+subgraph against the resolved PyTorch operation on independent random, zero,
+and boundary inputs. Formal analysis additionally requires the pinned
+Orojenesis toolchain and at least one safely composable tile-aware proof when
+the graph contains exact einsums.
 
 ## Executable ROCm correctness
 

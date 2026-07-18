@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import math
 import shutil
 import sys
 import traceback
@@ -146,6 +147,8 @@ def main() -> None:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     reference_path = output / "reference.py"
+    _copy_blobs(problem, output)
+    reference_path.write_text(standalone_reference_source(problem))
     reference_module: Any | None = None
     auditor = AmdCompatibilityAuditor(problem, device=args.device)
     selected = set(args.workload)
@@ -170,26 +173,52 @@ def main() -> None:
                 compatibility, "toolchain_unavailable", "orojenesis_init", runner_error
             )
 
+        tolerance = workload.raw.get("tolerance") or {}
+        normalized_tolerance: dict[str, Any] = {
+            "max_atol": float(tolerance.get("max_atol", 1e-2)),
+            "max_rtol": float(tolerance.get("max_rtol", 1e-2)),
+            "required_matched_ratio": float(
+                tolerance.get("required_matched_ratio", 0.99)
+            ),
+            "max_error_cap": (
+                float(tolerance["max_error_cap"])
+                if tolerance.get("max_error_cap") is not None
+                else None
+            ),
+            "allow_negative_inf": bool(tolerance.get("allow_negative_inf", False)),
+        }
+        numeric_tolerances = [
+            normalized_tolerance["max_atol"],
+            normalized_tolerance["max_rtol"],
+            normalized_tolerance["required_matched_ratio"],
+        ]
+        if normalized_tolerance["max_error_cap"] is not None:
+            numeric_tolerances.append(normalized_tolerance["max_error_cap"])
+        if not all(math.isfinite(value) and value >= 0 for value in numeric_tolerances):
+            parser.error(f"workload {workload.uuid} has invalid tolerance values")
+        if normalized_tolerance["required_matched_ratio"] > 1:
+            parser.error(f"workload {workload.uuid} required_matched_ratio exceeds one")
         entry: dict[str, Any] = {
             "name": workload.uuid,
             "uuid": workload.uuid,
             "status": compatibility["status"],
             "parameters": {"uuid": workload.uuid},
-            "tolerance": workload.raw.get("tolerance") or {},
+            "tolerance": normalized_tolerance,
         }
         if compatibility["status"] == "compatible":
+            stage = "reference_import"
             try:
                 # Do not import or execute the externally supplied reference
                 # until its AMD/cycle preflight has recorded it as compatible.
                 if reference_module is None:
-                    _copy_blobs(problem, output)
-                    reference_path.write_text(standalone_reference_source(problem))
                     reference_module = _load_module(reference_path)
+                stage = "input_generation"
                 inputs = tuple(
                     reference_module.get_inputs(
                         {"uuid": workload.uuid, "seed": 200}, args.device
                     )
                 )
+                stage = "graph_extraction"
                 graph_path = _extract_graph(
                     reference_module.run,
                     inputs,
@@ -197,6 +226,7 @@ def main() -> None:
                     output=workdir,
                     name=str(problem.definition["name"]),
                 )
+                stage = "analysis"
                 analysis = EinsumGraphAnalyzer().analyze_graph(
                     graph_path,
                     workdir,
@@ -211,7 +241,7 @@ def main() -> None:
                     raise RuntimeError("analysis did not produce an artifact")
                 analysis_path = workdir / "analysis.yaml"
                 verification_path = workdir / "verification.yaml"
-                tolerance = workload.raw.get("tolerance") or {}
+                stage = "verification"
                 create_verification_artifact(
                     reference_path=reference_path,
                     reference_entry_point="run",
@@ -220,8 +250,13 @@ def main() -> None:
                     workload_name=workload.uuid,
                     workload_parameters={"uuid": workload.uuid},
                     output_path=verification_path,
-                    atol=float(tolerance.get("max_atol", 1e-2)),
-                    rtol=float(tolerance.get("max_rtol", 1e-2)),
+                    atol=normalized_tolerance["max_atol"],
+                    rtol=normalized_tolerance["max_rtol"],
+                    required_matched_ratio=normalized_tolerance[
+                        "required_matched_ratio"
+                    ],
+                    max_error_cap=normalized_tolerance["max_error_cap"],
+                    allow_negative_inf=normalized_tolerance["allow_negative_inf"],
                     device=args.device,
                 )
                 entry["analysis"] = {
@@ -236,7 +271,7 @@ def main() -> None:
                 }
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 compatibility = _failed_result(
-                    compatibility, "graph_extraction_failed", "source_to_sol", exc
+                    compatibility, f"{stage}_failed", stage, exc
                 )
                 entry["status"] = compatibility["status"]
 

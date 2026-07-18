@@ -33,6 +33,7 @@ SUPPORTED_ATEN_TARGETS = frozenset(
         "clamp",
         "clone",
         "contiguous",
+        "copy",
         "conv1d",
         "conv2d",
         "conv3d",
@@ -100,6 +101,8 @@ SUPPORTED_ATEN_TARGETS = frozenset(
         "sum",
         "tanh",
         "transpose",
+        "to",
+        "type_as",
         "unsqueeze",
         "view",
         "where",
@@ -107,7 +110,7 @@ SUPPORTED_ATEN_TARGETS = frozenset(
     }
 )
 
-_MUTATING_TARGETS = frozenset({"scatter", "index_copy", "index_put", "copy", "setitem"})
+_MUTATING_TARGETS = frozenset({"copy", "setitem"})
 _ATOMIC_TARGETS = frozenset({"scatter", "index_copy", "index_put"})
 _LIBRARY_TARGETS = frozenset(
     {
@@ -123,6 +126,28 @@ _LIBRARY_TARGETS = frozenset(
         "layer_norm",
         "linear",
         "scaled_dot_product_attention",
+    }
+)
+
+# These ATen operations may return storage that aliases one of their inputs.
+# Treat conditional aliases (for example ``reshape`` and ``contiguous``) as
+# aliases as well: a formal fusion proof must be valid for every legal input
+# layout, not only for the layout observed by one trace.
+_ALIASING_TARGETS = frozenset(
+    {
+        "contiguous",
+        "detach",
+        "expand",
+        "flatten",
+        "narrow",
+        "permute",
+        "reshape",
+        "select",
+        "slice",
+        "squeeze",
+        "transpose",
+        "unsqueeze",
+        "view",
     }
 )
 
@@ -155,8 +180,7 @@ def _canonical_target(layer: Mapping[str, Any]) -> str:
         "max": "amax",
         "min": "amin",
         "t": "transpose",
-        "to": "identity",
-        "type": "identity",
+        "type": "to",
     }
     # Dunder names carry semantic trailing underscores, whereas a trailing
     # underscore on an ATen operator denotes mutation.  Resolve aliases before
@@ -172,8 +196,19 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
         return {"kind": "input", "target": "input", "arguments": [], "kwargs": {}}
 
     names = (layer.get("tensor_names") or {}).get("inputs") or []
-    arguments = [{"tensor": index} for index in range(len(names))]
-    if layer.get("is_real_einsum") is True and layer.get("einsum_equation"):
+    module_args = layer.get("module_args") or {}
+    recorded_arguments = module_args.get("call_arguments")
+    recorded_kwargs = module_args.get("call_kwargs")
+    arguments = (
+        _plain_value(recorded_arguments)
+        if isinstance(recorded_arguments, list)
+        else [{"tensor": index} for index in range(len(names))]
+    )
+    if (
+        layer.get("is_real_einsum") is True
+        and layer.get("einsum_equation")
+        and layer.get("force_aten_semantics") is not True
+    ):
         return {
             "kind": "einsum",
             "target": "einsum",
@@ -189,15 +224,24 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
         }
 
     target = _canonical_target(layer)
-    kwargs: dict[str, Any] = {}
-    for source in (layer.get("module_args") or {}, layer.get("additional_info") or {}):
+    kwargs: dict[str, Any] = (
+        _plain_value(recorded_kwargs) if isinstance(recorded_kwargs, Mapping) else {}
+    )
+    for source in (module_args, layer.get("additional_info") or {}):
         if isinstance(source, Mapping):
             for key, value in source.items():
-                if key not in {"raw_attributes", "training"}:
+                if key not in {
+                    "call_arguments",
+                    "call_kwargs",
+                    "function_name",
+                    "hierarchical_name",
+                    "raw_attributes",
+                    "training",
+                } and not isinstance(recorded_kwargs, Mapping):
                     kwargs[str(key)] = _plain_value(value)
     if "dims" in kwargs and "dim" not in kwargs:
         kwargs["dim"] = kwargs.pop("dims")
-    if target in {"view", "reshape"} and "shape" not in kwargs:
+    if target in {"view", "reshape"} and len(arguments) == 1 and "shape" not in kwargs:
         output_shapes = (layer.get("tensor_shapes") or {}).get("outputs") or []
         if len(output_shapes) == 1:
             # A fixed traced output shape completely specifies view/reshape.
@@ -205,7 +249,20 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
     if target in {"softmax", "log_softmax"} and "dim" not in kwargs:
         raise SemanticGraphError(f"{target} requires an explicit dim")
 
-    mutating = target in _MUTATING_TARGETS or str(layer.get("type", "")).endswith("_")
+    mutating = (
+        target in _MUTATING_TARGETS
+        or str(layer.get("type", "")).endswith("_")
+        or layer.get("mutates_inputs") is True
+    )
+    aliases = list(_plain_value(layer.get("aliases") or []))
+    if target in _ALIASING_TARGETS and arguments and not aliases:
+        aliases = [
+            {
+                "output": 0,
+                "input": 0,
+                "conditional": target in {"reshape", "contiguous"},
+            }
+        ]
     return {
         "kind": "aten",
         "target": target,
@@ -214,7 +271,7 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
         "kwargs": kwargs,
         "effects": {
             "mutates": [0] if mutating and arguments else [],
-            "aliases": list(_plain_value(layer.get("aliases") or [])),
+            "aliases": aliases,
             "atomic": target in _ATOMIC_TARGETS,
             "opaque_library_call": target in _LIBRARY_TARGETS,
         },
@@ -293,6 +350,53 @@ def validate_semantic_graph(graph: Mapping[str, Any]) -> None:
             raise SemanticGraphError(f"layer {layer_id} lacks explicit arguments")
         arguments = semantic.get("arguments") or []
         kwargs = semantic.get("kwargs") or {}
+        if not isinstance(kwargs, Mapping):
+            raise SemanticGraphError(f"layer {layer_id} has invalid keyword arguments")
+
+        referenced_tensors: set[int] = set()
+
+        def collect_tensor_references(value: Any) -> None:
+            if isinstance(value, Mapping):
+                if "tensor" in value:
+                    referenced_tensors.add(int(value["tensor"]))
+                else:
+                    for item in value.values():
+                        collect_tensor_references(item)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    collect_tensor_references(item)
+
+        collect_tensor_references(arguments)
+        collect_tensor_references(kwargs)
+        input_arity = len(names.get("inputs") or [])
+        if any(index < 0 or index >= input_arity for index in referenced_tensors):
+            raise SemanticGraphError(
+                f"layer {layer_id} references a tensor outside its input metadata"
+            )
+        if input_arity and referenced_tensors != set(range(input_arity)):
+            raise SemanticGraphError(
+                f"layer {layer_id} does not preserve every ordered tensor argument"
+            )
+
+        effects = semantic.get("effects")
+        if not isinstance(effects, Mapping):
+            raise SemanticGraphError(f"layer {layer_id} lacks explicit effects")
+        mutations = effects.get("mutates")
+        aliases = effects.get("aliases")
+        if not isinstance(mutations, list) or not isinstance(aliases, list):
+            raise SemanticGraphError(
+                f"layer {layer_id} has invalid mutation/alias effects"
+            )
+        if any(int(index) < 0 or int(index) >= input_arity for index in mutations):
+            raise SemanticGraphError(f"layer {layer_id} has invalid mutation target")
+        output_arity = len(names.get("outputs") or [])
+        for alias in aliases:
+            if (
+                not isinstance(alias, Mapping)
+                or int(alias.get("input", -1)) not in range(input_arity)
+                or int(alias.get("output", -1)) not in range(output_arity)
+            ):
+                raise SemanticGraphError(f"layer {layer_id} has invalid alias effect")
         # Each item is (keyword spelling, positional arity that also proves the
         # parameter was preserved). Tensor references and literal arguments
         # share the ordered ``arguments`` list, matching the ATen call.

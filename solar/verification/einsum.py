@@ -74,22 +74,38 @@ def _tensor_leaves(value: Any) -> list[Any]:
     return []
 
 
-def _assert_close(
-    actual: Any, expected: Any, atol: float, rtol: float
-) -> dict[str, float]:
+def _same_storage(left: Any, right: Any) -> bool:
+    """Return whether two tensor leaves observably alias the same storage."""
     import torch
 
+    if not isinstance(left, torch.Tensor) or not isinstance(right, torch.Tensor):
+        return False
+    if left is right:
+        return True
     try:
-        torch.testing.assert_close(
-            actual,
-            expected,
-            atol=atol,
-            rtol=rtol,
-            equal_nan=True,
-            check_device=False,
-        )
-    except AssertionError as exc:
-        raise VerificationError(f"PyTorch numerical equivalence failed: {exc}") from exc
+        return left.untyped_storage()._cdata == right.untyped_storage()._cdata
+    except RuntimeError:
+        return False
+
+
+def _alias_relation(outputs: Any, inputs: Any) -> tuple[tuple[bool, ...], ...]:
+    leaves = [*_tensor_leaves(inputs), *_tensor_leaves(outputs)]
+    return tuple(
+        tuple(_same_storage(left, right) for right in leaves) for left in leaves
+    )
+
+
+def _assert_close(
+    actual: Any,
+    expected: Any,
+    atol: float,
+    rtol: float,
+    *,
+    required_matched_ratio: float = 1.0,
+    max_error_cap: float | None = None,
+    allow_negative_inf: bool = False,
+) -> dict[str, float]:
+    import torch
 
     if isinstance(actual, torch.Tensor) and isinstance(expected, torch.Tensor):
         if actual.shape != expected.shape:
@@ -101,39 +117,92 @@ def _assert_close(
             raise VerificationError(
                 f"output dtype mismatch: einsum={actual.dtype}, reference={expected.dtype}"
             )
-        if not torch.allclose(actual, expected, atol=atol, rtol=rtol, equal_nan=True):
-            finite = torch.isfinite(actual) & torch.isfinite(expected)
-            difference = (actual - expected).abs()
-            max_abs = (
-                float(difference[finite].max().item()) if finite.any() else math.inf
-            )
-            denominator = expected.abs().clamp_min(torch.finfo(expected.dtype).tiny)
-            relative = difference / denominator
-            max_rel = float(relative[finite].max().item()) if finite.any() else math.inf
+        if not (actual.is_floating_point() or actual.is_complex()):
+            if not torch.equal(actual, expected):
+                raise VerificationError("integer/bool tensor values differ")
+            return {"max_abs_error": 0.0}
+        calculation_dtype = torch.complex64 if actual.is_complex() else torch.float32
+        output = actual.to(calculation_dtype)
+        reference = expected.to(calculation_dtype)
+        matching_negative_inf = torch.zeros_like(output, dtype=torch.bool)
+        if allow_negative_inf:
+            matching_negative_inf = torch.isneginf(output) & torch.isneginf(reference)
+        if bool(
+            ((~torch.isfinite(output)) & ~matching_negative_inf).any()
+            or ((~torch.isfinite(reference)) & ~matching_negative_inf).any()
+        ):
+            raise VerificationError("non-finite tensor values are not allowed")
+        if (
+            torch.linalg.vector_norm(reference).item() > 0
+            and torch.linalg.vector_norm(output).item() == 0
+        ):
+            raise VerificationError("all-zero output disagrees with reference")
+        if allow_negative_inf:
+            finite_mask = ~matching_negative_inf
+            output = output[finite_mask]
+            reference = reference[finite_mask]
+        difference = (output - reference).abs()
+        matched = difference <= atol + rtol * reference.abs()
+        matched_ratio = float(matched.float().mean().item()) if matched.numel() else 1.0
+        max_abs = float(difference.max().item()) if difference.numel() else 0.0
+        if matched_ratio < required_matched_ratio:
             raise VerificationError(
-                f"numerical mismatch: max_abs={max_abs:.6g}, max_rel={max_rel:.6g}"
+                f"numerical mismatch: matched_ratio={matched_ratio:.6g}, "
+                f"required={required_matched_ratio:.6g}, max_abs={max_abs:.6g}"
             )
-        finite = torch.isfinite(actual) & torch.isfinite(expected)
-        difference = (actual - expected).abs()
-        max_abs = float(difference[finite].max().item()) if finite.any() else 0.0
-        return {"max_abs_error": max_abs}
+        if max_error_cap is not None:
+            if max_abs > max_error_cap:
+                raise VerificationError(
+                    f"maximum error {max_abs:.6g} exceeds cap {max_error_cap:.6g}"
+                )
+        return {"max_abs_error": max_abs, "matched_ratio": matched_ratio}
     if isinstance(actual, (tuple, list)) and isinstance(expected, (tuple, list)):
         if len(actual) != len(expected):
             raise VerificationError("output arity mismatch")
-        stats = [_assert_close(a, e, atol, rtol) for a, e in zip(actual, expected)]
-        return {"max_abs_error": max((s["max_abs_error"] for s in stats), default=0.0)}
+        stats = [
+            _assert_close(
+                a,
+                e,
+                atol,
+                rtol,
+                required_matched_ratio=required_matched_ratio,
+                max_error_cap=max_error_cap,
+                allow_negative_inf=allow_negative_inf,
+            )
+            for a, e in zip(actual, expected)
+        ]
+        return {
+            "max_abs_error": max((s["max_abs_error"] for s in stats), default=0.0),
+            "matched_ratio": min(
+                (s.get("matched_ratio", 1.0) for s in stats), default=1.0
+            ),
+        }
     if isinstance(actual, dict) and isinstance(expected, dict):
         if actual.keys() != expected.keys():
             raise VerificationError("output mapping keys differ")
         stats = [
-            _assert_close(actual[key], expected[key], atol, rtol) for key in actual
+            _assert_close(
+                actual[key],
+                expected[key],
+                atol,
+                rtol,
+                required_matched_ratio=required_matched_ratio,
+                max_error_cap=max_error_cap,
+                allow_negative_inf=allow_negative_inf,
+            )
+            for key in actual
         ]
-        return {"max_abs_error": max((s["max_abs_error"] for s in stats), default=0.0)}
+        return {
+            "max_abs_error": max((s["max_abs_error"] for s in stats), default=0.0),
+            "matched_ratio": min(
+                (s.get("matched_ratio", 1.0) for s in stats), default=1.0
+            ),
+        }
     if actual != expected:
         raise VerificationError(
             f"non-tensor output mismatch: {actual!r} != {expected!r}"
         )
-    return {"max_abs_error": 0.0}
+    return {"max_abs_error": 0.0, "matched_ratio": 1.0}
 
 
 _TOKEN = re.compile(r"[A-Za-z][0-9]*")
@@ -174,6 +243,14 @@ class EinsumGraphExecutor:
         if not isinstance(layers, Mapping) or not layers:
             raise EinsumExecutionError("einsum graph has no layers")
         self.layers = dict(layers)
+        declared_outputs = graph.get("outputs")
+        if declared_outputs is None:
+            declared_outputs = (graph.get("graph_signature") or {}).get("joint_outputs")
+        self.declared_outputs = (
+            [str(name) for name in declared_outputs]
+            if isinstance(declared_outputs, list)
+            else None
+        )
         self.check_shapes = check_shapes
         self._validate_layers()
 
@@ -301,15 +378,25 @@ class EinsumGraphExecutor:
                     f"unresolvable graph dependencies: {missing}"
                 )
 
-        terminal = [
-            name for name in produced if name not in consumed and name in values
-        ]
-        ordered_terminal = [
-            str(name)
-            for layer in self.layers.values()
-            for name in ((layer.get("tensor_names") or {}).get("outputs") or [])
-            if name in terminal
-        ]
+        if self.declared_outputs is not None:
+            missing_outputs = [
+                name for name in self.declared_outputs if name not in values
+            ]
+            if missing_outputs:
+                raise EinsumExecutionError(
+                    f"graph declares unavailable outputs: {missing_outputs}"
+                )
+            ordered_terminal = self.declared_outputs
+        else:
+            terminal = [
+                name for name in produced if name not in consumed and name in values
+            ]
+            ordered_terminal = [
+                str(name)
+                for layer in self.layers.values()
+                for name in ((layer.get("tensor_names") or {}).get("outputs") or [])
+                if name in terminal
+            ]
         if not ordered_terminal:
             raise EinsumExecutionError("einsum graph has no terminal output")
         outputs = tuple(values[name] for name in ordered_terminal)
@@ -354,11 +441,16 @@ class EinsumGraphExecutor:
                 return torch.device(str(argument["device"]))
             if "value" in argument:
                 value = argument["value"]
+                if value == "__ellipsis__":
+                    return Ellipsis
                 if value == "preserve_format":
                     return torch.preserve_format
                 if value == "contiguous_format":
                     return torch.contiguous_format
                 return value
+            if "slice" in argument:
+                values = [decode({"value": item}) for item in argument["slice"]]
+                return slice(*values)
             raise EinsumExecutionError(
                 f"layer {layer_id} has an invalid semantic argument"
             )
@@ -370,6 +462,19 @@ class EinsumGraphExecutor:
         }
         target = str(semantic.get("target", ""))
         output_shapes = _shapes(layer)
+
+        effects = semantic.get("effects") or {}
+        if effects.get("mutates"):
+            if not arguments:
+                raise EinsumExecutionError(
+                    f"mutating operation {target!r} at {layer_id} has no receiver"
+                )
+            method = getattr(arguments[0], f"{target}_", None)
+            if method is None:
+                raise EinsumExecutionError(
+                    f"mutating operation {target!r} at {layer_id} is unavailable"
+                )
+            return method(*arguments[1:], **kwargs)
 
         binary = {
             "add": torch.add,
@@ -408,6 +513,10 @@ class EinsumGraphExecutor:
             return unary[target](*arguments, **kwargs)
         if target == "identity":
             return arguments[0]
+        if target == "to":
+            return arguments[0].to(*arguments[1:], **kwargs)
+        if target == "type_as":
+            return arguments[0].type_as(*arguments[1:], **kwargs)
         if target == "clone":
             return arguments[0].clone(**kwargs)
         if target == "detach":
@@ -427,8 +536,10 @@ class EinsumGraphExecutor:
         }:
             return getattr(torch, target)(*arguments, **kwargs)
         if target in {"view", "reshape"}:
+            if len(arguments) > 1:
+                return getattr(arguments[0], target)(*arguments[1:], **kwargs)
             shape = kwargs.pop("shape", output_shapes[0])
-            return arguments[0].reshape(tuple(shape))
+            return getattr(arguments[0], target)(tuple(shape))
         if target == "flatten":
             return torch.flatten(*arguments, **kwargs)
         if target == "contiguous":
@@ -444,6 +555,8 @@ class EinsumGraphExecutor:
                 return arguments[0].t()
             return torch.transpose(*arguments, **kwargs)
         if target in {"cat", "stack"}:
+            if arguments and isinstance(arguments[0], (list, tuple)):
+                return getattr(torch, target)(*arguments, **kwargs)
             return getattr(torch, target)(arguments, **kwargs)
         if target in {"chunk", "split"}:
             return getattr(torch, target)(*arguments, **kwargs)
@@ -546,6 +659,9 @@ def _run_cases(
     *,
     atol: float,
     rtol: float,
+    required_matched_ratio: float,
+    max_error_cap: float | None,
+    allow_negative_inf: bool,
     device: str,
     check_shapes: bool,
 ) -> list[dict[str, Any]]:
@@ -560,9 +676,26 @@ def _run_cases(
             tuple(generated) if isinstance(generated, (tuple, list)) else (generated,)
         )
         inputs = _pattern_inputs(inputs, pattern)
-        expected = reference(*_clone(inputs))
-        actual = executor(*_clone(inputs))
-        stats = _assert_close(actual, expected, atol, rtol)
+        reference_inputs = _clone(inputs)
+        executor_inputs = _clone(inputs)
+        expected = reference(*reference_inputs)
+        actual = executor(*executor_inputs)
+        stats = _assert_close(
+            actual,
+            expected,
+            atol,
+            rtol,
+            required_matched_ratio=required_matched_ratio,
+            max_error_cap=max_error_cap,
+            allow_negative_inf=allow_negative_inf,
+        )
+        _assert_close(executor_inputs, reference_inputs, atol, rtol)
+        if _alias_relation(actual, executor_inputs) != _alias_relation(
+            expected, reference_inputs
+        ):
+            raise VerificationError(
+                "output/input alias relationships differ from the reference"
+            )
         results.append(
             {
                 "seed": seed,
@@ -585,6 +718,9 @@ def create_verification_artifact(
     output_path: str | Path,
     atol: float,
     rtol: float,
+    required_matched_ratio: float = 1.0,
+    max_error_cap: float | None = None,
+    allow_negative_inf: bool = False,
     seeds: Sequence[int] = (11, 29, 47),
     patterns: Sequence[str] = ("random", "zeros", "boundary"),
     device: str = "cpu",
@@ -615,6 +751,9 @@ def create_verification_artifact(
         cases,
         atol=atol,
         rtol=rtol,
+        required_matched_ratio=required_matched_ratio,
+        max_error_cap=max_error_cap,
+        allow_negative_inf=allow_negative_inf,
         device=device,
         check_shapes=True,
     )
@@ -642,7 +781,13 @@ def create_verification_artifact(
                 "name": workload_name,
                 "parameters_sha256": _canonical_hash(workload_parameters),
             },
-            "tolerance": {"atol": float(atol), "rtol": float(rtol)},
+            "tolerance": {
+                "atol": float(atol),
+                "rtol": float(rtol),
+                "required_matched_ratio": float(required_matched_ratio),
+                "max_error_cap": max_error_cap,
+                "allow_negative_inf": bool(allow_negative_inf),
+            },
             "execution": execution,
             "cases": cases,
             "results": results,
@@ -661,6 +806,9 @@ def replay_verification_artifact(
     workload_parameters: Mapping[str, Any],
     atol: float,
     rtol: float,
+    required_matched_ratio: float = 1.0,
+    max_error_cap: float | None = None,
+    allow_negative_inf: bool = False,
     device: str | None = None,
 ) -> None:
     """Validate every binding and numerically replay a verification artifact."""
@@ -695,9 +843,25 @@ def replay_verification_artifact(
         raise VerificationError("verification workload name mismatch")
     if workload_data.get("parameters_sha256") != _canonical_hash(workload_parameters):
         raise VerificationError("verification workload parameters mismatch")
+    recorded_atol = float(tolerance.get("atol", math.inf))
+    recorded_rtol = float(tolerance.get("rtol", math.inf))
+    recorded_ratio = float(tolerance.get("required_matched_ratio", -1.0))
+    recorded_cap_raw = tolerance.get("max_error_cap")
+    recorded_cap = float(recorded_cap_raw) if recorded_cap_raw is not None else None
+    cap_is_weaker = max_error_cap is not None and (
+        recorded_cap is None or recorded_cap > max_error_cap
+    )
+    negative_inf_is_weaker = (
+        bool(tolerance.get("allow_negative_inf", False)) and not allow_negative_inf
+    )
     if (
-        float(tolerance.get("atol", math.inf)) > atol
-        or float(tolerance.get("rtol", math.inf)) > rtol
+        not all(math.isfinite(value) for value in (recorded_atol, recorded_rtol))
+        or not math.isfinite(recorded_ratio)
+        or recorded_atol > atol
+        or recorded_rtol > rtol
+        or recorded_ratio < required_matched_ratio
+        or cap_is_weaker
+        or negative_inf_is_weaker
     ):
         raise VerificationError(
             "verification tolerance is weaker than benchmark tolerance"
@@ -748,6 +912,13 @@ def replay_verification_artifact(
         cases,
         atol=float(tolerance["atol"]),
         rtol=float(tolerance["rtol"]),
+        required_matched_ratio=float(tolerance["required_matched_ratio"]),
+        max_error_cap=(
+            float(tolerance["max_error_cap"])
+            if tolerance.get("max_error_cap") is not None
+            else None
+        ),
+        allow_negative_inf=bool(tolerance["allow_negative_inf"]),
         device=replay_device,
         check_shapes=True,
     )

@@ -20,7 +20,7 @@ einsum_graph.yaml           (Stage 2: einsum conversion)
 einsum_graph_renamed.yaml   (Stage 2b: BFS rank rename)
   │  solar.cli.analyze_model
   ▼
-analysis.yaml               (Stage 3: hardware-independent analysis)
+analysis.yaml               (Stage 3: metrics + optional formal architecture bound)
   │  solar.cli.predict_perf_model
   ▼
 perf_<arch>.yaml            (Stage 4: roofline performance prediction)
@@ -66,8 +66,10 @@ This is the canonical intermediate representation. **All layers — including su
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `schema_version` | `int` | `3` for executable official graphs |
 | `model_name` | `str` | Name of the model |
 | `layers` | `dict[str, Layer]` | All layers (start nodes + op nodes) |
+| `outputs` | `list[str]` | Optional explicit ordered graph output tensor names |
 
 ### Layer dict (every layer)
 
@@ -82,7 +84,9 @@ This is the canonical intermediate representation. **All layers — including su
 | `tensor_names` | `dict` | yes | `{inputs: [str], outputs: [str]}` — unique tensor name per slot (e.g. `Model.matmul.Weight`, `Model.matmul.Output`) |
 | `tensor_types` | `dict` | yes | `{inputs: [str], outputs: [str]}` — semantic role per slot: `input`, `weight`, `bias`, `output` |
 | `tensor_shapes` | `dict` | yes | `{inputs: [list[int]], outputs: [list[int]]}` — shape per slot |
+| `tensor_dtypes` | `dict` | yes | `{inputs: [str], outputs: [str]}` — explicit dtype per slot |
 | `connections` | `dict` | yes | `{inputs: [str], outputs: [str]}` — layer IDs (not tensor names) |
+| `semantic_op` | `dict` | yes | Executable `kind`, target/equation, ordered arguments, kwargs, and effects |
 
 ### Optional fields
 
@@ -90,7 +94,7 @@ This is the canonical intermediate representation. **All layers — including su
 |-------|------|-------------|
 | `taco_expression` | `str` | TACO index notation equivalent |
 | `raw_attributes` | `str` | Original torchview raw_attributes string |
-| `tensor_dtypes` | `dict` | `{inputs: [str], outputs: [str]}` — dtype strings (used on `start` nodes) |
+| `graph_signature` | `dict` | AOT joint-graph inputs/outputs, saved tensors, gradients, and mutation maps |
 
 ### Key conventions
 
@@ -101,7 +105,7 @@ This is the canonical intermediate representation. **All layers — including su
 
 ---
 
-## 3. `analysis.yaml` — Hardware-Independent Analysis
+## 3. `analysis.yaml` — Analysis and Formal Bound
 
 Produced by `solar.analysis.graph_analyzer`.
 
@@ -109,9 +113,10 @@ Produced by `solar.analysis.graph_analyzer`.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `schema_version` | `int` | `3` for formal executable-semantic analysis |
 | `layers` | `dict[str, Layer]` | Per-layer analysis (start nodes excluded) |
 | `total` | `dict` | Graph-wide totals |
-| `metadata` | `dict` | Precision / byte info |
+| `metadata` | `dict` | Precision, provenance, fusion, solver, architecture and bound kind |
 
 ### Layer dict
 
@@ -124,7 +129,7 @@ Produced by `solar.analysis.graph_analyzer`.
 | `other_ops` | `int` | Scalar/vector elementwise and reduction operations |
 | `flops` | `int` | `2 * macs` |
 | `unfused_elements` | `int` | `input_elements + output_elements` (all DRAM traffic if nothing fused) |
-| `orojenesis_elements` | `int \| null` | Reserved (null when orojenesis disabled) |
+| `orojenesis_elements` | `float \| null` | Diagnostic selected solver traffic in fallback element units |
 | `fused_elements` | `int` | External I/O only (intermediates excluded) |
 | `tensor_shapes` | `dict` | `{inputs: [...], outputs: [...]}` — copied from einsum graph |
 | `tensor_sizes` | `dict` | `{inputs: [int], outputs: [int]}` — product of each shape |
@@ -148,9 +153,14 @@ Produced by `solar.analysis.graph_analyzer`.
 | `other_ops` | `int` | Sum of all layer other_ops |
 | `flops` | `int` | `2 * macs` |
 | `unfused_elements` | `int` | Sum across layers |
-| `orojenesis_elements` | `int \| null` | Reserved |
+| `orojenesis_elements` | `float \| null` | Sum of selected solver traffic in fallback element units |
 | `fused_elements` | `int` | Deduplicated external I/O (shared tensors counted once) |
-| `fused_prefetched_elements` | `int` | Same as `fused_elements` |
+| `fused_bytes` | `float` | Deduplicated graph-external compulsory I/O |
+| `fused_prefetched_elements` | `int` | Compatibility element count for graph-external I/O |
+| `fused_prefetched_bytes` | `float` | Formal tile-aware traffic when available |
+| `io_lower_bound_bytes` | `float` | Compulsory I/O plus safely composable solver excess |
+| `lower_bound_seconds` | `float \| null` | `max(compute, io_lower_bound / bandwidth)` |
+| `lower_bound_components` | `dict \| null` | Compute, fused/prefetched memory, and overlap components |
 | `model_io_elements` | `int` | Per-op sum (may double-count shared inputs; diagnostic) |
 | `intermediate_elements` | `int` | Total fusable elements |
 | `num_intermediate_tensors` | `int` | Count of intermediate tensor names |
@@ -162,6 +172,11 @@ Produced by `solar.analysis.graph_analyzer`.
 | `precision` | `str` | e.g. `fp16`, `fp32`, `bf16`, `fp8` |
 | `bytes_per_element` | `float` | Bytes per tensor element for this precision |
 | `source_graph` | `str` | Path to the einsum graph that was analyzed |
+| `source_graph_sha256` | `str` | Hash of the exact source graph |
+| `fusion` | `dict \| null` | Edge legality decisions, regions, liveness, and hierarchy pressure |
+| `orojenesis` | `dict` | Pinned solver identity, evidence files, curve, selected point and coverage |
+| `architecture` | `dict \| null` | Architecture profile used for the formal bound |
+| `bound_kind` | `str` | `capacity_constrained_tile_aware_v1` or `diagnostic` |
 
 ---
 
@@ -177,7 +192,7 @@ Produced by `solar.perf.perf_model`.
 | `workload` | Model-level compute/memory summary |
 | `unfused` | Whole-graph roofline using all operation tensor traffic |
 | `fused` | Whole-graph roofline using deduplicated external I/O |
-| `fused_prefetched` | Compatibility view of the same fused whole-graph total |
+| `fused_prefetched` | Tile-aware traffic when formal evidence exists; otherwise diagnostic fallback |
 | `memory_breakdown` | Weight vs activation vs intermediate split |
 | `speedup` | Ratio between models |
 | `memory_reduction` | Fraction of memory saved by fusion |

@@ -16,7 +16,13 @@ from solar.benchmark.timing import (
     TorchCacheController,
     UnstableTimingError,
 )
-from solar.benchmark.evaluator import _ShiftingInputPool
+from solar.benchmark.evaluator import (
+    RocmEvaluator,
+    _ShiftingInputPool,
+    _equal,
+    _identical,
+)
+from solar.benchmark.models import WorkloadSpec
 
 
 class FakeClock:
@@ -187,3 +193,91 @@ def test_amd_smi_clock_level_json_variants(monkeypatch, field):
 def test_cache_controller_evicts_twice_declared_last_level_cache():
     controller = TorchCacheController(32, device="cpu")
     assert controller._buffer.numel() == 64
+
+
+def test_official_matched_ratio_and_error_cap_are_both_enforced():
+    import torch
+
+    expected = torch.ones(100)
+    actual = expected.clone()
+    actual[-1] = 10.0
+    assert _equal(
+        actual,
+        expected,
+        1e-5,
+        1e-5,
+        required_matched_ratio=0.99,
+    )
+    assert not _equal(
+        actual,
+        expected,
+        1e-5,
+        1e-5,
+        required_matched_ratio=0.99,
+        max_error_cap=5.0,
+    )
+
+
+def test_official_nonfinite_and_all_zero_rules_are_fail_closed():
+    import torch
+
+    negative_inf = torch.tensor([float("-inf"), 1.0])
+    positive_inf = torch.tensor([float("inf"), 1.0])
+    assert not _equal(negative_inf, negative_inf, 0.0, 0.0)
+    assert _equal(
+        negative_inf,
+        negative_inf,
+        0.0,
+        0.0,
+        allow_negative_inf=True,
+    )
+    assert not _equal(
+        positive_inf,
+        positive_inf,
+        0.0,
+        0.0,
+        allow_negative_inf=True,
+    )
+    reference = torch.zeros(100)
+    reference[-1] = 1.0
+    assert not _equal(
+        torch.zeros_like(reference),
+        reference,
+        0.0,
+        0.0,
+        required_matched_ratio=0.99,
+    )
+
+
+def test_input_integrity_comparison_preserves_nan_but_rejects_mutation():
+    import torch
+
+    pristine = torch.tensor([float("nan"), float("-inf"), 1.0])
+    assert _identical(pristine.clone(), pristine)
+    mutated = pristine.clone()
+    mutated[-1] += 1e-7
+    assert not _identical(mutated, pristine)
+
+
+def test_evaluator_rejects_analysis_from_another_architecture_profile():
+    evaluator = RocmEvaluator()
+    workload = WorkloadSpec(
+        name="wrong-architecture",
+        analysis=SimpleNamespace(architecture_hash="0" * 64),
+    )
+    result = evaluator._evaluate_workload(  # pylint: disable=protected-access
+        workload,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        {},
+        False,
+        None,
+    )
+    assert result.status == "invalid_analysis"
+    assert "architecture" in str(result.failure)

@@ -23,12 +23,16 @@ The output `analysis.yaml` is intended to be hardware-independent and includes:
 - per-layer: macs, flops (= 2 * macs), tensor dtypes, and exact byte traffic
 - totals across the graph
 
-Memory Access Models (elements are diagnostic; byte totals use each tensor dtype):
-- unfused_elements: All tensor accesses (inputs + outputs) per op, summed
-- orojenesis_elements: Set to None (orojenesis runs not enabled)
-- fused_elements: Deduplicated external I/O (weights + model inputs/outputs),
-    same tensor read by multiple ops counted once. Equal to fused_prefetched.
-- fused_prefetched_elements: Same as fused_elements (deduplicated external I/O)
+Memory access models (elements are diagnostic; byte totals use each tensor dtype):
+- ``unfused``: every per-operation input and output access;
+- ``fused``: compulsory, deduplicated graph-external I/O;
+- ``prefetched`` / ``io_lower_bound``: compulsory I/O plus the safely composable
+  excess traffic selected from a capacity-constrained Orojenesis curve.
+
+Formal schema-v3 analysis also emits conservative fusion regions, hierarchy
+capacity pressure, the pinned solver inputs/raw curve and their SHA-256 hashes,
+and separate compute/memory overlap components.  Unsupported multi-einsum
+composition is never approximated into a scored bound.
 
 Note: input_elements includes all inputs to an operation (including weights/biases).
 Weights are treated as inputs since they are just another operand to the computation.
@@ -74,6 +78,54 @@ def _product(shape: List[int]) -> int:
     for d in shape:
         out *= int(d)
     return int(out)
+
+
+def contraction_operands_are_graph_external(
+    layer: dict[str, Any], layers: dict[str, Any]
+) -> bool:
+    """Return whether every contraction operand traces to a graph input.
+
+    Unconditional aliasing views are transparent. Conditional aliases such as
+    reshape/contiguous are not, because a formal proof must cover layouts that
+    require materialization.
+    """
+    producers = {
+        str(name): (str(layer_id), producer, output_index)
+        for layer_id, producer in layers.items()
+        for output_index, name in enumerate(
+            (producer.get("tensor_names") or {}).get("outputs") or []
+        )
+    }
+
+    def traces_external(name: str, visited: set[str]) -> bool:
+        if name in visited:
+            return False
+        produced = producers.get(name)
+        if produced is None:
+            return True
+        _, producer, output_index = produced
+        if str(producer.get("type", "")).lower() == "start":
+            return True
+        semantic = producer.get("semantic_op") or {}
+        effects = semantic.get("effects") or {}
+        aliases = [
+            alias
+            for alias in effects.get("aliases") or []
+            if int(alias.get("output", -1)) == output_index
+            and not bool(alias.get("conditional", False))
+        ]
+        if len(aliases) != 1:
+            return False
+        input_index = int(aliases[0].get("input", -1))
+        input_names = (producer.get("tensor_names") or {}).get("inputs") or []
+        if input_index not in range(len(input_names)):
+            return False
+        return traces_external(str(input_names[input_index]), visited | {name})
+
+    return all(
+        traces_external(str(name), set())
+        for name in (layer.get("tensor_names") or {}).get("inputs") or []
+    )
 
 
 class EinsumGraphAnalyzer:
@@ -902,6 +954,8 @@ class EinsumGraphAnalyzer:
         profile: ArchitectureProfile | None = None
         audited_fused_bytes = total_fused_bytes
         audited_prefetched_bytes = total_fused_bytes
+        formal_bound = False
+        lower_bound_components: dict[str, float] | None = None
         if semantic_graph and semantic_complete:
             if isinstance(architecture, ArchitectureProfile):
                 profile = architecture
@@ -909,12 +963,11 @@ class EinsumGraphAnalyzer:
                 profile = ArchitectureProfile.load(architecture)
             hierarchy = profile.memory_hierarchy if profile is not None else ()
             fusion = FusionPlanner(graph).plan(hierarchy)
-            audited_fused_bytes = float(
-                sum(region["fused_bytes"] for region in fusion["regions"])
-            )
-            audited_prefetched_bytes = float(
-                sum(region["prefetched_bytes"] for region in fusion["regions"])
-            )
+            # The compulsory HBM lower bound is graph external I/O.  Region
+            # boundaries and on-chip capacity pressure are not automatically
+            # HBM traffic because values may remain in another cache level.
+            audited_fused_bytes = total_fused_bytes
+            audited_prefetched_bytes = audited_fused_bytes
 
             einsum_layers = {
                 layer_id: layer
@@ -940,8 +993,15 @@ class EinsumGraphAnalyzer:
                         default=None,
                     )
                 for layer_id, layer in einsum_layers.items():
-                    dtypes = (layer.get("tensor_dtypes") or {}).get("inputs") or []
-                    bits = max(
+                    tensor_dtypes = layer.get("tensor_dtypes") or {}
+                    dtypes = [
+                        *(tensor_dtypes.get("inputs") or []),
+                        *(tensor_dtypes.get("outputs") or []),
+                    ]
+                    # Timeloop uses one global word width.  The minimum tensor
+                    # width is conservative for mixed-dtype equations; using
+                    # the maximum would overstate the communication bound.
+                    bits = min(
                         (int(dtype_bytes(str(dtype)) * 8) for dtype in dtypes),
                         default=int(element_size * 8),
                     )
@@ -949,21 +1009,119 @@ class EinsumGraphAnalyzer:
                         layer, out_dir / "orojenesis" / layer_id, word_bits=bits
                     )
                     if last_cache is not None:
+                        point = select_capacity_point(
+                            result["curve"], int(last_cache.capacity_bytes or 0)
+                        )
+                        if point is None and require_orojenesis:
+                            raise ValueError(
+                                f"Orojenesis produced no point within "
+                                f"{last_cache.name} capacity for {layer_id}"
+                            )
                         result["selected_capacity"] = {
                             "level": last_cache.name,
                             "capacity_bytes": last_cache.capacity_bytes,
-                            "point": select_capacity_point(
-                                result["curve"], int(last_cache.capacity_bytes or 0)
-                            ),
+                            "point": point,
                         }
+                    for evidence in result.get("evidence_files", {}).values():
+                        evidence["path"] = str(
+                            Path("orojenesis") / layer_id / str(evidence["path"])
+                        )
                     orojenesis["layers"][layer_id] = result
             elif not einsum_layers:
                 orojenesis["status"] = "not_applicable"
 
+            # Consume solver traffic only when the single-einsum proof is
+            # applicable to a complete graph endpoint region.  More complex
+            # producer/consumer fusion requires the official multi-einsum
+            # solver and is rejected in formal mode instead of approximated.
+            if einsum_layers and orojenesis["status"] == "complete":
+                region_by_layer = {
+                    layer_id: region
+                    for region in fusion["regions"]
+                    for layer_id in region["layers"]
+                }
+                solver_excesses: list[float] = []
+                for layer_id, layer in einsum_layers.items():
+                    result = orojenesis["layers"][layer_id]
+                    point = (result.get("selected_capacity") or {}).get("point")
+                    region = region_by_layer[layer_id]
+                    graph_input_contraction = contraction_operands_are_graph_external(
+                        layer, all_layers
+                    )
+                    applicable = bool(point and graph_input_contraction)
+                    result["formal_applicability"] = {
+                        "applicable": applicable,
+                        "region": region["id"],
+                        "graph_input_operands": graph_input_contraction,
+                        "reason": (
+                            "graph_input_contraction"
+                            if applicable
+                            else "internal_operand_requires_multi_einsum_composition"
+                        ),
+                    }
+                    if not applicable:
+                        continue
+                    assert point is not None
+                    solver_bytes = float(point["dram_bytes"])
+                    word_bytes = int(result["word_bits"]) // 8
+                    names = layer.get("tensor_names") or {}
+                    shapes = layer.get("tensor_shapes") or {}
+                    modeled_tensors: dict[str, list[int]] = {}
+                    for side in ("inputs", "outputs"):
+                        for name, shape in zip(
+                            names.get(side) or [], shapes.get(side) or []
+                        ):
+                            modeled_tensors[str(name)] = list(shape)
+                    compulsory_bytes = float(
+                        sum(_product(shape) for shape in modeled_tensors.values())
+                        * word_bytes
+                    )
+                    result["audited_dram_bytes"] = solver_bytes
+                    result["modeled_compulsory_bytes"] = compulsory_bytes
+                    solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+                # A maximum is composable without assuming that independent
+                # region traffic cannot share cache residency.
+                audited_prefetched_bytes = audited_fused_bytes + max(
+                    solver_excesses, default=0.0
+                )
+                applicable_layers = sum(
+                    bool((result.get("formal_applicability") or {}).get("applicable"))
+                    for result in orojenesis["layers"].values()
+                )
+                orojenesis["formal_coverage"] = {
+                    "applicable_layers": applicable_layers,
+                    "total_layers": len(orojenesis["layers"]),
+                }
+                formal_bound = bool(solver_excesses) and all(
+                    (result.get("selected_capacity") or {}).get("point") is not None
+                    for result in orojenesis["layers"].values()
+                )
+            elif not einsum_layers:
+                formal_bound = True
+
         lower_bound_seconds = None
         if profile is not None and semantic_graph and semantic_complete:
-            lower_bound_seconds = profile.theoretical_seconds_by_precision(
-                macs_by_precision, audited_prefetched_bytes
+            compute_seconds = sum(
+                2.0 * float(macs) / profile.peak_for(precision_name)
+                for precision_name, macs in macs_by_precision.items()
+            )
+            fused_memory_seconds = (
+                audited_fused_bytes / profile.memory_bandwidth_bytes_per_second
+            )
+            prefetched_memory_seconds = (
+                audited_prefetched_bytes / profile.memory_bandwidth_bytes_per_second
+            )
+            lower_bound_seconds = max(compute_seconds, prefetched_memory_seconds)
+            lower_bound_components = {
+                "compute_seconds": compute_seconds,
+                "fused_memory_seconds": fused_memory_seconds,
+                "fused_unoverlapped_seconds": compute_seconds + fused_memory_seconds,
+                "prefetched_memory_seconds": prefetched_memory_seconds,
+                "prefetched_overlapped_seconds": lower_bound_seconds,
+            }
+        if require_orojenesis and not formal_bound:
+            raise ValueError(
+                "formal analysis did not produce a complete tile-aware bound"
             )
 
         analysis: Dict[str, Any] = {
@@ -993,7 +1151,9 @@ class EinsumGraphAnalyzer:
                 "fused_prefetched_elements": total_fused_prefetched_elems,
                 "fused_prefetched_bytes": audited_prefetched_bytes,
                 "prefetched_bytes": audited_prefetched_bytes,
+                "io_lower_bound_bytes": audited_prefetched_bytes,
                 "lower_bound_seconds": lower_bound_seconds,
+                "lower_bound_components": lower_bound_components,
                 "model_io_elements": int(total_model_io_elems),
                 "model_io_bytes": total_model_io_bytes,
                 "intermediate_elements": int(total_intermediate_elems),
@@ -1012,6 +1172,11 @@ class EinsumGraphAnalyzer:
                 "source_graph_sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
                 "fusion": fusion,
                 "orojenesis": orojenesis,
+                "bound_kind": (
+                    "capacity_constrained_tile_aware_v1"
+                    if formal_bound and profile is not None
+                    else "diagnostic"
+                ),
                 "architecture": profile.to_dict() if profile is not None else None,
             },
         }

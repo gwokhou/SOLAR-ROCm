@@ -83,6 +83,12 @@ class FusionPlanner:
             raise ValueError("fusion requires an acyclic semantic graph")
 
         parent = {node: node for node in dag.nodes}
+        contractions = {
+            node: int(
+                (self.layers[node].get("semantic_op") or {}).get("kind") == "einsum"
+            )
+            for node in dag.nodes
+        }
 
         def find(node: str) -> str:
             while parent[node] != node:
@@ -94,12 +100,36 @@ class FusionPlanner:
             left_root, right_root = find(left), find(right)
             if left_root != right_root:
                 parent[right_root] = left_root
+                contractions[left_root] += contractions[right_root]
 
         decisions: list[dict[str, Any]] = []
         for producer, consumer in dag.edges:
             producer_reason = self._barrier(self.layers[producer])
             consumer_reason = self._barrier(self.layers[consumer])
             reason = producer_reason or consumer_reason
+            producer_root, consumer_root = find(producer), find(consumer)
+            producer_kind = str(
+                (self.layers[producer].get("semantic_op") or {}).get("kind", "")
+            )
+            consumer_kind = str(
+                (self.layers[consumer].get("semantic_op") or {}).get("kind", "")
+            )
+            if (
+                reason is None
+                and consumer_kind == "einsum"
+                and producer_kind != "einsum"
+            ):
+                # The single-einsum OAVES proof assumes its operands enter the
+                # tile region from the modeled backing store.  A producer
+                # fused into the contraction requires the official
+                # multi-einsum solver and is therefore kept in another region.
+                reason = "einsum_operand_producer_boundary"
+            if (
+                reason is None
+                and producer_root != consumer_root
+                and contractions[producer_root] + contractions[consumer_root] > 1
+            ):
+                reason = "multiple_einsums_require_multi_einsum_solver"
             legal = reason is None
             if legal:
                 union(producer, consumer)
@@ -196,17 +226,18 @@ class FusionPlanner:
                 peak_live = max(peak_live, live)
 
             capacities: dict[str, Any] = {}
-            spill_lower_bound = 0
             for level in hierarchy:
                 capacity = level.capacity_bytes
-                spill = None if capacity is None else max(0, peak_live - capacity)
-                if spill is not None:
-                    spill_lower_bound = max(spill_lower_bound, 2 * spill)
+                pressure = None if capacity is None else max(0, peak_live - capacity)
                 capacities[level.name] = {
                     "scope": level.scope,
                     "capacity_bytes": capacity,
                     "peak_live_bytes": peak_live,
-                    "spill_bytes_lower_bound": None if spill is None else 2 * spill,
+                    # This is deliberately diagnostic.  Pressure at one
+                    # on-chip level may be served by another on-chip level and
+                    # therefore cannot be charged to HBM traffic.  The formal
+                    # off-chip lower bound comes from the tile-aware solver.
+                    "capacity_pressure_bytes": pressure,
                     "source": level.source,
                 }
             regions.append(
@@ -217,7 +248,11 @@ class FusionPlanner:
                     "external_outputs": sorted(external_outputs),
                     "unfused_bytes": unfused_bytes,
                     "fused_bytes": fused_bytes,
-                    "prefetched_bytes": fused_bytes + spill_lower_bound,
+                    # Prefetch changes overlap, not compulsory byte volume.
+                    # Keeping the byte counts distinct in name but equal in
+                    # value prevents on-chip pressure from being mislabeled as
+                    # HBM traffic; timing semantics are emitted by the analyzer.
+                    "prefetched_bytes": fused_bytes,
                     "peak_live_bytes": peak_live,
                     "capacity": capacities,
                 }

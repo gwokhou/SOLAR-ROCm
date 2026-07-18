@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
@@ -54,6 +55,7 @@ class AnalysisArtifact:
     fused_bytes: float
     macs_by_precision: dict[str, float]
     lower_bound_seconds: float
+    architecture_hash: str
 
     @classmethod
     def load(cls, data: Mapping[str, Any], source_root: Path) -> "AnalysisArtifact":
@@ -96,7 +98,13 @@ class AnalysisArtifact:
             raise ValueError(
                 "benchmark analysis requires explicit dtype for every tensor"
             )
-        required = {"flops", "fused_bytes", "macs_by_precision", "lower_bound_seconds"}
+        required = {
+            "flops",
+            "fused_bytes",
+            "io_lower_bound_bytes",
+            "macs_by_precision",
+            "lower_bound_seconds",
+        }
         if not required.issubset(total):
             raise ValueError(
                 "analysis total must contain flops, fused_bytes, and macs_by_precision"
@@ -107,10 +115,22 @@ class AnalysisArtifact:
         }
         flops = float(total["flops"])
         fused_bytes = float(total["fused_bytes"])
+        io_lower_bound_bytes = float(total["io_lower_bound_bytes"])
         lower_bound_seconds = float(total["lower_bound_seconds"])
         if (
-            flops < 0
+            not all(
+                math.isfinite(value)
+                for value in (
+                    flops,
+                    fused_bytes,
+                    io_lower_bound_bytes,
+                    lower_bound_seconds,
+                    *macs_by_precision.values(),
+                )
+            )
+            or flops < 0
             or fused_bytes < 0
+            or io_lower_bound_bytes < fused_bytes
             or lower_bound_seconds < 0
             or any(value < 0 for value in macs_by_precision.values())
         ):
@@ -120,9 +140,24 @@ class AnalysisArtifact:
         ):
             raise ValueError("analysis flops must equal twice macs_by_precision")
 
-        # Hashes prove identity, while deterministic re-analysis proves that
-        # the checked-in totals were actually derived from the bound graph.
-        from solar.analysis.graph_analyzer import EinsumGraphAnalyzer
+        if metadata.get("bound_kind") != "capacity_constrained_tile_aware_v1":
+            raise ValueError(
+                "benchmark scoring requires a formal capacity-constrained tile-aware bound"
+            )
+
+        # Hashes prove identity, while deterministic re-analysis proves the
+        # graph-derived totals.  Orojenesis evidence is verified separately
+        # against its pinned inputs and raw curve below.
+        from solar.analysis.graph_analyzer import (
+            EinsumGraphAnalyzer,
+            contraction_operands_are_graph_external,
+        )
+        from solar.analysis.orojenesis import (
+            OROJENESIS_COMMIT,
+            OrojenesisRunner,
+            select_capacity_point,
+        )
+        from solar.rocm.architecture import ArchitectureProfile
 
         with tempfile.TemporaryDirectory(prefix="solar-analysis-verify-") as output:
             derived = EinsumGraphAnalyzer().analyze_graph(
@@ -130,6 +165,7 @@ class AnalysisArtifact:
                 output,
                 precision=str(metadata.get("precision", "fp16")),
                 copy_graph=False,
+                strict=True,
                 architecture=metadata.get("architecture"),
             )
         if derived is None:
@@ -145,16 +181,169 @@ class AnalysisArtifact:
                 str(key).lower(): float(value)
                 for key, value in (derived_total.get("macs_by_precision") or {}).items()
             },
-            "lower_bound_seconds": float(derived_total.get("lower_bound_seconds", -1)),
         }
         artifact_identity = {
             "flops": flops,
             "fused_bytes": fused_bytes,
             "macs_by_precision": macs_by_precision,
-            "lower_bound_seconds": lower_bound_seconds,
         }
         if derived_identity != artifact_identity:
             raise ValueError("analysis totals drifted from the bound source graph")
+
+        graph = yaml.safe_load(graph_path.read_text()) or {}
+        layers = graph.get("layers") or {}
+        einsum_layers = {
+            str(layer_id): layer
+            for layer_id, layer in layers.items()
+            if (layer.get("semantic_op") or {}).get("kind") == "einsum"
+        }
+        solver = metadata.get("orojenesis") or {}
+        if einsum_layers and solver.get("status") != "complete":
+            raise ValueError("formal analysis lacks complete Orojenesis evidence")
+        if not einsum_layers and solver.get("status") != "not_applicable":
+            raise ValueError(
+                "non-einsum formal analysis has inconsistent solver status"
+            )
+
+        fusion = derived_metadata.get("fusion") or {}
+        region_by_layer = {
+            str(layer_id): region
+            for region in fusion.get("regions") or []
+            for layer_id in region.get("layers") or []
+        }
+        solver_excesses: list[float] = []
+        recorded_layers = solver.get("layers") or {}
+        if set(recorded_layers) != set(einsum_layers):
+            raise ValueError("Orojenesis evidence does not cover every einsum layer")
+        for layer_id, layer in einsum_layers.items():
+            result = recorded_layers[layer_id]
+            if result.get("solver") != "NVlabs/timeloop oaves_keep_max":
+                raise ValueError(f"Orojenesis solver identity mismatch for {layer_id}")
+            if result.get("commit") != OROJENESIS_COMMIT:
+                raise ValueError(f"Orojenesis revision mismatch for {layer_id}")
+            word_bits = int(result.get("word_bits", 0))
+            if word_bits <= 0 or word_bits % 8:
+                raise ValueError(f"invalid Orojenesis word width for {layer_id}")
+            evidence_files = result.get("evidence_files") or {}
+            required_files = {
+                "problem.yaml",
+                "architecture.yaml",
+                "mapper.yaml",
+                "curve",
+            }
+            if set(evidence_files) != required_files:
+                raise ValueError(f"incomplete Orojenesis evidence files for {layer_id}")
+            resolved_files: dict[str, Path] = {}
+            for name, evidence in evidence_files.items():
+                relative = _relative_path(
+                    str((evidence or {}).get("path", "")),
+                    f"orojenesis.{layer_id}.{name}.path",
+                )
+                candidate = (analysis_path.parent / relative).resolve()
+                if (
+                    analysis_path.parent not in candidate.parents
+                    or not candidate.is_file()
+                ):
+                    raise ValueError(f"Orojenesis evidence file is missing: {relative}")
+                digest = cls._parse_sha256(
+                    (evidence or {}).get("sha256"),
+                    f"orojenesis.{layer_id}.{name}.sha256",
+                )
+                if hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+                    raise ValueError(
+                        f"Orojenesis evidence SHA-256 mismatch: {relative}"
+                    )
+                resolved_files[name] = candidate
+
+            expected_problem = OrojenesisRunner.problem_for_layer(layer)
+            if (
+                yaml.safe_load(resolved_files["problem.yaml"].read_text())
+                != expected_problem
+            ):
+                raise ValueError(f"Orojenesis problem drifted from layer {layer_id}")
+            if yaml.safe_load(
+                resolved_files["architecture.yaml"].read_text()
+            ) != OrojenesisRunner.architecture(word_bits):
+                raise ValueError(f"Orojenesis architecture drifted for {layer_id}")
+            dimensions = list(expected_problem["problem"]["shape"]["dimensions"])
+            spaces = [
+                item["name"]
+                for item in expected_problem["problem"]["shape"]["data-spaces"]
+            ]
+            if yaml.safe_load(
+                resolved_files["mapper.yaml"].read_text()
+            ) != OrojenesisRunner.mapper_config(dimensions, spaces):
+                raise ValueError(f"Orojenesis mapper drifted for {layer_id}")
+            curve = OrojenesisRunner.parse_curve(
+                resolved_files["curve"], word_bytes=word_bits // 8
+            )
+            if curve != result.get("curve"):
+                raise ValueError(f"Orojenesis curve drifted for {layer_id}")
+            selected = result.get("selected_capacity") or {}
+            point = select_capacity_point(curve, int(selected.get("capacity_bytes", 0)))
+            if point is None or point != selected.get("point"):
+                raise ValueError(f"Orojenesis capacity point is invalid for {layer_id}")
+            applicability = result.get("formal_applicability") or {}
+            expected_applicable = contraction_operands_are_graph_external(layer, layers)
+            if bool(applicability.get("applicable")) != expected_applicable:
+                raise ValueError(f"Orojenesis applicability drifted for {layer_id}")
+            region = region_by_layer.get(layer_id)
+            if region is None or applicability.get("region") != region.get("id"):
+                raise ValueError(f"Orojenesis fusion region mismatch for {layer_id}")
+            solver_bytes = float(point["dram_bytes"])
+            if float(result.get("audited_dram_bytes", -1)) != solver_bytes:
+                if applicability.get("applicable") is True:
+                    raise ValueError(
+                        f"Orojenesis audited traffic drifted for {layer_id}"
+                    )
+            if applicability.get("applicable") is True:
+                word_bytes = word_bits // 8
+                names = layer.get("tensor_names") or {}
+                shapes = layer.get("tensor_shapes") or {}
+                modeled_tensors: dict[str, list[int]] = {}
+                for side in ("inputs", "outputs"):
+                    for name, shape in zip(
+                        names.get(side) or [], shapes.get(side) or []
+                    ):
+                        modeled_tensors[str(name)] = list(shape)
+                compulsory_bytes = float(
+                    sum(math.prod(shape) for shape in modeled_tensors.values())
+                    * word_bytes
+                )
+                if (
+                    float(result.get("modeled_compulsory_bytes", -1))
+                    != compulsory_bytes
+                ):
+                    raise ValueError(
+                        f"Orojenesis compulsory traffic drifted for {layer_id}"
+                    )
+                solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+            elif applicability.get("reason") != (
+                "internal_operand_requires_multi_einsum_composition"
+            ):
+                raise ValueError(f"invalid Orojenesis applicability for {layer_id}")
+
+        expected_io_bytes = fused_bytes + max(solver_excesses, default=0.0)
+        expected_coverage = {
+            "applicable_layers": len(solver_excesses),
+            "total_layers": len(einsum_layers),
+        }
+        if einsum_layers and solver.get("formal_coverage") != expected_coverage:
+            raise ValueError("Orojenesis formal coverage drifted")
+        if einsum_layers and not solver_excesses:
+            raise ValueError("formal analysis has no composable tile-aware layer")
+        if io_lower_bound_bytes != expected_io_bytes:
+            raise ValueError(
+                "analysis I/O lower bound drifted from Orojenesis evidence"
+            )
+        profile = ArchitectureProfile.load(metadata.get("architecture") or {})
+        expected_seconds = profile.theoretical_seconds_by_precision(
+            macs_by_precision, expected_io_bytes
+        )
+        if lower_bound_seconds != expected_seconds:
+            raise ValueError("analysis time bound drifted from audited I/O evidence")
+        architecture_identity = profile.to_dict()
+        architecture_identity.pop("source", None)
         return cls(
             path=path,
             sha256=expected_analysis_sha,
@@ -164,6 +353,7 @@ class AnalysisArtifact:
             fused_bytes=fused_bytes,
             macs_by_precision=macs_by_precision,
             lower_bound_seconds=lower_bound_seconds,
+            architecture_hash=canonical_hash(architecture_identity),
         )
 
     @staticmethod
@@ -195,6 +385,9 @@ class VerificationArtifact:
         workload_parameters: Mapping[str, Any],
         atol: float,
         rtol: float,
+        required_matched_ratio: float,
+        max_error_cap: float | None,
+        allow_negative_inf: bool,
     ) -> "VerificationArtifact":
         path = _relative_path(str(data.get("path", "")), "verification.path")
         digest = AnalysisArtifact._parse_sha256(
@@ -219,6 +412,9 @@ class VerificationArtifact:
             workload_parameters=workload_parameters,
             atol=atol,
             rtol=rtol,
+            required_matched_ratio=required_matched_ratio,
+            max_error_cap=max_error_cap,
+            allow_negative_inf=allow_negative_inf,
         )
         return cls(
             path=path,
@@ -276,6 +472,9 @@ class WorkloadSpec:
     compatibility: CompatibilityArtifact | None = None
     atol: float = 1e-5
     rtol: float = 1e-5
+    required_matched_ratio: float = 1.0
+    max_error_cap: float | None = None
+    allow_negative_inf: bool = False
 
     @classmethod
     def from_dict(
@@ -303,6 +502,27 @@ class WorkloadSpec:
         workload_rtol = float(
             local_tolerance.get("max_rtol", local_tolerance.get("rtol", rtol))
         )
+        required_matched_ratio = float(
+            local_tolerance.get("required_matched_ratio", 1.0)
+        )
+        max_error_cap_raw = local_tolerance.get("max_error_cap")
+        max_error_cap = (
+            float(max_error_cap_raw) if max_error_cap_raw is not None else None
+        )
+        allow_negative_inf = bool(local_tolerance.get("allow_negative_inf", False))
+        if not all(
+            math.isfinite(value)
+            for value in (workload_atol, workload_rtol, required_matched_ratio)
+        ):
+            raise ValueError("workload tolerances must be finite")
+        if workload_atol < 0 or workload_rtol < 0:
+            raise ValueError("workload tolerances must be non-negative")
+        if not 0.0 <= required_matched_ratio <= 1.0:
+            raise ValueError("required_matched_ratio must be between zero and one")
+        if max_error_cap is not None and (
+            not math.isfinite(max_error_cap) or max_error_cap < 0
+        ):
+            raise ValueError("max_error_cap must be finite and non-negative")
         if status != "compatible":
             if status not in {"incompatible", "execution_failed", "not_checked"}:
                 raise ValueError(f"invalid workload status: {status}")
@@ -315,8 +535,10 @@ class WorkloadSpec:
                 raise ValueError(
                     "non-compatible workloads require compatibility evidence"
                 )
-            compatibility = CompatibilityArtifact.load(compatibility_data, source_root)
-            if compatibility.status != status:
+            status_evidence = CompatibilityArtifact.load(
+                compatibility_data, source_root
+            )
+            if status_evidence.status != status:
                 raise ValueError(
                     "workload status disagrees with compatibility artifact"
                 )
@@ -325,9 +547,12 @@ class WorkloadSpec:
                 status=status,
                 uuid=str(data.get("uuid", "")) or None,
                 parameters=parameters,
-                compatibility=compatibility,
+                compatibility=status_evidence,
                 atol=workload_atol,
                 rtol=workload_rtol,
+                required_matched_ratio=required_matched_ratio,
+                max_error_cap=max_error_cap,
+                allow_negative_inf=allow_negative_inf,
             )
 
         analysis_data = data.get("analysis")
@@ -348,12 +573,15 @@ class WorkloadSpec:
                 workload_parameters=parameters,
                 atol=workload_atol,
                 rtol=workload_rtol,
+                required_matched_ratio=required_matched_ratio,
+                max_error_cap=max_error_cap,
+                allow_negative_inf=allow_negative_inf,
             )
         else:
             raise ValueError(
                 "compatible workloads require a replayable verification artifact"
             )
-        compatibility = None
+        compatibility: CompatibilityArtifact | None = None
         compatibility_data = data.get("compatibility")
         if compatibility_data is not None:
             if not isinstance(compatibility_data, Mapping):
@@ -371,6 +599,9 @@ class WorkloadSpec:
             compatibility=compatibility,
             atol=workload_atol,
             rtol=workload_rtol,
+            required_matched_ratio=required_matched_ratio,
+            max_error_cap=max_error_cap,
+            allow_negative_inf=allow_negative_inf,
         )
 
 
@@ -451,6 +682,8 @@ class BenchmarkSpec:
             )
         if self.cache_policy not in SUPPORTED_CACHE_POLICIES:
             raise ValueError(f"unsupported cache policy: {self.cache_policy}")
+        if not math.isfinite(self.atol) or not math.isfinite(self.rtol):
+            raise ValueError("tolerances must be finite")
         if self.atol < 0 or self.rtol < 0:
             raise ValueError("tolerances must be non-negative")
         source = (self.source_root / self.reference_source).resolve()

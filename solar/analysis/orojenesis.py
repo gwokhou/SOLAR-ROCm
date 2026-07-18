@@ -12,6 +12,7 @@ import csv
 import hashlib
 import os
 import re
+import string
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -76,7 +77,20 @@ class OrojenesisRunner:
         if len(operands) != len(shapes) or len(output_shapes) != 1:
             raise OrojenesisError("einsum operand arity does not match tensor metadata")
         dimension_sizes: dict[str, int] = {}
+        dimension_symbols: dict[str, str] = {}
         data_spaces: list[dict[str, Any]] = []
+
+        def symbol(token: str) -> str:
+            if token not in dimension_symbols:
+                index = len(dimension_symbols)
+                symbols = string.ascii_uppercase + string.ascii_lowercase
+                if index >= len(symbols):
+                    raise OrojenesisError(
+                        "Orojenesis supports at most 52 distinct dimensions"
+                    )
+                dimension_symbols[token] = symbols[index]
+            return dimension_symbols[token]
+
         for index, (operand, shape) in enumerate(zip(operands, shapes)):
             tokens = _TOKEN.findall(operand)
             if len(tokens) != len(shape):
@@ -86,7 +100,10 @@ class OrojenesisRunner:
                     raise OrojenesisError(f"inconsistent dimension {token}")
                 dimension_sizes[token] = int(size)
             data_spaces.append(
-                {"name": f"Input{index}", "projection": [[[token]] for token in tokens]}
+                {
+                    "name": f"Input{index}",
+                    "projection": [[[symbol(token)]] for token in tokens],
+                }
             )
         output_tokens = _TOKEN.findall(rhs)
         if len(output_tokens) != len(output_shapes[0]):
@@ -98,14 +115,17 @@ class OrojenesisRunner:
         data_spaces.append(
             {
                 "name": "Output",
-                "projection": [[[token]] for token in output_tokens],
+                "projection": [[[symbol(token)]] for token in output_tokens],
                 "read-write": True,
             }
         )
-        dimensions = list(dimension_sizes)
+        remapped_sizes = {
+            dimension_symbols[token]: size for token, size in dimension_sizes.items()
+        }
+        dimensions = list(remapped_sizes)
         return {
             "problem": {
-                "instance": dimension_sizes,
+                "instance": remapped_sizes,
                 "shape": {"data-spaces": data_spaces, "dimensions": dimensions},
             }
         }

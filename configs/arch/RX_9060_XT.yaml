@@ -4,6 +4,7 @@
 name: Radeon_RX_9060_XT
 vendor: AMD
 gfx_target: gfx1200
+profile_revision: rx9060xt-amd-resource-v1
 compute_units: 32
 memory_capacity_bytes: 17179869184
 memory_bandwidth_bytes_per_second: 320000000000
@@ -45,6 +46,47 @@ peak_ops_per_second:
   fp8: 205000000000000
   int8: 205000000000000
   int4: 410000000000000
+resource_model_version: amd_resource_v1
+# MFMA rates use the published matrix throughput.  The other resources use
+# the RDNA4 packed-FP16 VOPD issue ceiling (32 CU * 512 ops/CU/cycle * 3.13
+# GHz).  That deliberately loose ceiling cannot tighten TSOL using an
+# empirical result; calibration only checks it for contradictions.
+resource_limits:
+  mfma:
+    "fp32->fp32": 25600000000000
+    "fp16->fp32": 103000000000000
+    "bf16->fp32": 103000000000000
+    "fp8->fp32": 205000000000000
+    "int8->int32": 205000000000000
+    "int4->int32": 410000000000000
+  valu:
+    generic: 51281920000000
+  sfu:
+    generic: 51281920000000
+  reduction:
+    generic: 51281920000000
+  atomic:
+    generic: 51281920000000
+  scan_sort:
+    generic: 51281920000000
+  conversion:
+    generic: 51281920000000
+resource_limit_sources:
+  mfma: https://www.amd.com/en/products/specifications/graphics.html
+  valu: https://rocm.docs.amd.com/projects/rocprofiler-compute/en/develop/conceptual/rdna/system-speed-of-light.html
+  sfu: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+  reduction: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+  atomic: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+  scan_sort: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+  conversion: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+audit_evidence:
+  status: verified
+  path: configs/arch/evidence/RX_9060_XT_resource_audit.yaml
+  sha256: ca91342d312ef98c64b60ff081c8a318df4bd896c4f5c190995690c76c0a5522
+  schema_version: 2
+  timing_profile: official
+  clocks_locked: true
+  gfx_target: gfx1200
 # ROCm/PyTorch FNUZ spellings use the generic published FP8 roofline.
 # Non-ROCm FN formats are intentionally not aliased on this AMD profile.
 precision_aliases:

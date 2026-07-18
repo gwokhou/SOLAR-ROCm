@@ -481,12 +481,20 @@ class EinsumGraphExecutor:
             "sub": torch.sub,
             "mul": torch.mul,
             "div": torch.div,
+            "eq": torch.eq,
+            "ge": torch.ge,
+            "gt": torch.gt,
+            "le": torch.le,
+            "lt": torch.lt,
+            "ne": torch.ne,
             "pow": torch.pow,
             "maximum": torch.maximum,
             "minimum": torch.minimum,
+            "bitwise_and": torch.bitwise_and,
         }
         unary = {
             "abs": torch.abs,
+            "bitwise_not": torch.bitwise_not,
             "cos": torch.cos,
             "elu": functional.elu,
             "exp": torch.exp,
@@ -509,12 +517,18 @@ class EinsumGraphExecutor:
             return binary[target](*arguments, **kwargs)
         if target in {"mm", "bmm", "matmul", "addmm", "where"}:
             return getattr(torch, target)(*arguments, **kwargs)
+        if target == "masked_fill":
+            return arguments[0].masked_fill(*arguments[1:], **kwargs)
+        if target == "cumsum":
+            return torch.cumsum(*arguments, **kwargs)
         if target in unary:
             return unary[target](*arguments, **kwargs)
         if target == "identity":
             return arguments[0]
         if target == "to":
             return arguments[0].to(*arguments[1:], **kwargs)
+        if target in {"bfloat16", "float", "half", "int", "long"}:
+            return getattr(arguments[0], target)()
         if target == "type_as":
             return arguments[0].type_as(*arguments[1:], **kwargs)
         if target == "clone":
@@ -544,7 +558,14 @@ class EinsumGraphExecutor:
             return torch.flatten(*arguments, **kwargs)
         if target == "contiguous":
             return arguments[0].contiguous(**kwargs)
-        if target in {"squeeze", "unsqueeze", "permute", "repeat", "expand"}:
+        if target in {
+            "squeeze",
+            "unsqueeze",
+            "permute",
+            "repeat",
+            "repeat_interleave",
+            "expand",
+        }:
             return getattr(arguments[0], target)(*arguments[1:], **kwargs)
         if target == "transpose":
             if len(arguments) == 1 and not kwargs:
@@ -562,6 +583,14 @@ class EinsumGraphExecutor:
             return getattr(torch, target)(*arguments, **kwargs)
         if target in {"gather", "scatter", "index_select", "select", "narrow"}:
             return getattr(torch, target)(*arguments, **kwargs)
+        if target == "getitem":
+            index = arguments[1]
+            if isinstance(index, list) and any(
+                isinstance(item, slice) or item is None or item is Ellipsis
+                for item in index
+            ):
+                index = tuple(index)
+            return arguments[0][index]
         if target == "slice":
             dim = int(kwargs.get("dim", 0))
             start = kwargs.get("start")
@@ -677,7 +706,32 @@ def _run_cases(
         )
         inputs = _pattern_inputs(inputs, pattern)
         reference_inputs = _clone(inputs)
-        executor_inputs = _clone(inputs)
+        # Executable einsum graphs carry Python scalar arguments in semantic
+        # kwargs rather than as tensor start nodes.  Preserve every argument
+        # for the reference, but replay only tensor inputs through the graph.
+        import torch
+
+        source_input_indices = graph.get("source_input_indices")
+        if source_input_indices is None:
+            reference_tensor_inputs = tuple(
+                value for value in reference_inputs if isinstance(value, torch.Tensor)
+            )
+        else:
+            try:
+                reference_tensor_inputs = tuple(
+                    reference_inputs[int(index)] for index in source_input_indices
+                )
+            except (IndexError, TypeError, ValueError) as exc:
+                raise VerificationError(
+                    "graph has invalid source_input_indices"
+                ) from exc
+            if not all(
+                isinstance(value, torch.Tensor) for value in reference_tensor_inputs
+            ):
+                raise VerificationError(
+                    "graph source_input_indices must select tensor arguments"
+                )
+        executor_inputs = _clone(reference_tensor_inputs)
         expected = reference(*reference_inputs)
         actual = executor(*executor_inputs)
         stats = _assert_close(
@@ -689,9 +743,9 @@ def _run_cases(
             max_error_cap=max_error_cap,
             allow_negative_inf=allow_negative_inf,
         )
-        _assert_close(executor_inputs, reference_inputs, atol, rtol)
+        _assert_close(executor_inputs, reference_tensor_inputs, atol, rtol)
         if _alias_relation(actual, executor_inputs) != _alias_relation(
-            expected, reference_inputs
+            expected, reference_tensor_inputs
         ):
             raise VerificationError(
                 "output/input alias relationships differ from the reference"

@@ -1,25 +1,50 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
 # SPDX-License-Identifier: Apache-2.0
 
-"""Measured ROCm calibration diagnostics; never a theoretical SOL replacement."""
+"""Measured ROCm resource audits; never a theoretical SOL replacement."""
 
 from __future__ import annotations
 
+import hashlib
+import math
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from solar.analysis.resources import RESOURCE_MODEL_VERSION
 from solar.benchmark.timing import AdaptiveTimer, TimingPolicy
 from solar.rocm import ArchitectureProfile, RocmEnvironment
+
+
+@dataclass(frozen=True)
+class ResourceProbe:
+    """One exact operation and its audited amount of architectural work."""
+
+    operation: Callable[[], Any]
+    work_amount: float
+    resource: str
+    mode: str
 
 
 @dataclass(frozen=True)
 class CalibrationArtifact:
     schema_version: int
     architecture: str
+    profile_revision: str
+    resource_model_version: str
     gfx_target: str | None
     timing_profile: str
+    clocks_locked: bool
+    clock_levels: tuple[str, ...]
+    environment: dict[str, Any]
     measured_throughput_per_second: dict[str, float]
+    upper_bound_per_second: dict[str, float]
+    upper_bound_ratio: dict[str, float]
     timing_ms: dict[str, dict[str, Any]]
+    probe_source_sha256: str | None
+    calibrator_source_sha256: str
+    audit_status: str
+    tolerance_ratio: float
     diagnostic_only: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -27,6 +52,8 @@ class CalibrationArtifact:
 
 
 class RocmCalibrator:
+    """Measure every modeled AMD resource under one immutable profile."""
+
     def __init__(
         self,
         architecture: ArchitectureProfile | None = None,
@@ -39,10 +66,15 @@ class RocmCalibrator:
 
     def calibrate(
         self,
-        operations: Mapping[str, tuple[Callable[[], Any], float]],
+        operations: Mapping[str, ResourceProbe],
         *,
-        timing_profile: str = "standard",
+        timing_profile: str = "official",
+        clocks_locked: bool = False,
+        clock_levels: tuple[str, ...] = (),
+        probe_source_sha256: str | None = None,
+        tolerance_ratio: float = 0.05,
     ) -> CalibrationArtifact:
+        """Run resource probes and reject measurements contradicting ceilings."""
         environment = self.environment or RocmEnvironment.detect()
         if (
             not environment.supported_target
@@ -53,20 +85,76 @@ class RocmCalibrator:
                 f"got {environment.gfx_target}"
             )
         policy = TimingPolicy.for_name(timing_profile)
+        if policy.publishable and not clocks_locked:
+            raise RuntimeError(
+                "publishable calibration requires a STABLE_PEAK clock lock"
+            )
+        if tolerance_ratio < 0 or not math.isfinite(tolerance_ratio):
+            raise ValueError(
+                "calibration tolerance_ratio must be finite and non-negative"
+            )
+        required = set(self.architecture.resource_limits) | {"memory"}
+        present = {probe.resource for probe in operations.values()}
+        if policy.publishable and present != required:
+            raise ValueError(
+                "official calibration must cover every resource; "
+                f"missing={sorted(required - present)}, extra={sorted(present - required)}"
+            )
+
         throughput: dict[str, float] = {}
+        upper_bounds: dict[str, float] = {}
+        ratios: dict[str, float] = {}
         timings: dict[str, dict[str, Any]] = {}
-        for name, (operation, work_amount) in operations.items():
-            stats = AdaptiveTimer(policy).measure(operation)
+        for name, probe in operations.items():
+            if probe.work_amount <= 0 or not math.isfinite(probe.work_amount):
+                raise ValueError(
+                    f"probe {name} work amount must be positive and finite"
+                )
+            stats = AdaptiveTimer(policy).measure(probe.operation)
             timings[name] = stats.to_dict()
-            throughput[name] = float(work_amount) / (stats.p50_ms / 1000.0)
+            measured = float(probe.work_amount) / (stats.p50_ms / 1000.0)
+            upper = (
+                self.architecture.memory_bandwidth_bytes_per_second
+                if probe.resource == "memory"
+                else self.architecture.resource_rate_for(probe.resource, probe.mode)
+            )
+            ratio = measured / upper
+            if not math.isfinite(measured) or measured <= 0:
+                raise RuntimeError(f"probe {name} produced invalid throughput")
+            if ratio > 1.0 + tolerance_ratio:
+                raise RuntimeError(
+                    f"probe {name} measured {measured:g}, exceeding formal upper "
+                    f"bound {upper:g} by more than {tolerance_ratio:.1%}"
+                )
+            throughput[name] = measured
+            upper_bounds[name] = upper
+            ratios[name] = ratio
+
+        audit_status = (
+            "verified" if policy.publishable and clocks_locked else "diagnostic"
+        )
         return CalibrationArtifact(
-            schema_version=1,
+            schema_version=2,
             architecture=self.architecture.name,
+            profile_revision=self.architecture.profile_revision,
+            resource_model_version=RESOURCE_MODEL_VERSION,
             gfx_target=environment.gfx_target,
             timing_profile=policy.name,
+            clocks_locked=clocks_locked,
+            clock_levels=clock_levels,
+            environment=environment.to_dict(),
             measured_throughput_per_second=throughput,
+            upper_bound_per_second=upper_bounds,
+            upper_bound_ratio=ratios,
             timing_ms=timings,
+            probe_source_sha256=probe_source_sha256,
+            calibrator_source_sha256=hashlib.sha256(
+                Path(__file__).read_bytes()
+            ).hexdigest(),
+            audit_status=audit_status,
+            tolerance_ratio=tolerance_ratio,
+            diagnostic_only=not (policy.publishable and clocks_locked),
         )
 
 
-__all__ = ["CalibrationArtifact", "RocmCalibrator"]
+__all__ = ["CalibrationArtifact", "ResourceProbe", "RocmCalibrator"]

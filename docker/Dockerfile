@@ -28,12 +28,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     command -v hipcc && command -v rocprofv3 && command -v amd-smi
 
 ARG OROJENESIS_COMMIT=97d52178bf9a9c209bf79be96b87c164bcd35625
+# GCC 14 no longer exposes std::uint64_t transitively through unrelated
+# headers. Inject the standard header so the pinned source remains unmodified.
+COPY --chmod=0755 docker/g++-cstdint /tmp/orojenesis-compiler/g++
 RUN git clone https://github.com/NVlabs/timeloop.git /opt/orojenesis && \
     git -C /opt/orojenesis checkout ${OROJENESIS_COMMIT} && \
     ln -s ../pat-public/src/pat /opt/orojenesis/src/pat && \
-    scons -C /opt/orojenesis --static -j4 && \
+    PATH="/tmp/orojenesis-compiler:${PATH}" scons -C /opt/orojenesis --static -j4 && \
     test "$(git -C /opt/orojenesis rev-parse HEAD)" = "${OROJENESIS_COMMIT}" && \
     test -x /opt/orojenesis/bin/timeloop-mapper
+RUN git config --system --add safe.directory /opt/orojenesis
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.18 /uv /usr/local/bin/uv
 

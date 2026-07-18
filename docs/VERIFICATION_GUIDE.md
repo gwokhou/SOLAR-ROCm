@@ -40,7 +40,9 @@ For a focused conversion and cost check:
 
 These tests cover equation generation, rank renaming, tensor shapes, MAC/FLOP
 counts, fused/unfused memory totals, orphan pruning, zero-compute operations,
-and end-to-end analysis/performance output.
+resource classification (MFMA, VALU, SFU, reduction, atomic, scan/sort, and
+conversion), fail-closed unknown operations, and end-to-end
+analysis/performance output.
 
 The maintained example pipelines provide an additional artifact-level check:
 
@@ -91,6 +93,36 @@ subgraph against the resolved PyTorch operation on independent random, zero,
 and boundary inputs. Formal analysis additionally requires the pinned
 Orojenesis toolchain and at least one safely composable tile-aware proof when
 the graph contains exact einsums.
+
+For official graphs, the loader independently rederives not only FLOPs and
+external bytes but also `resource_work`, per-resource time, the bottleneck
+resource, and TSOL. A formal artifact is rejected if resource coverage reports
+an unclassified operation or if compatibility evidence reports any fallback.
+
+## Official SOL-ExecBench representative audit
+
+The RX 9060 XT manifest and checked report are:
+
+- `configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml`
+- `configs/corpus/evidence/RX_9060_XT_SOL_EXECBENCH_audit.yaml`
+
+They pin the upstream dataset revision and every selected row/workload hash.
+The audit executes each compatible reference in an isolated process, verifies
+formal artifacts against independently written FLOP/byte/resource goldens,
+and keeps unsupported quantization cases as explicit incompatibilities. Run:
+
+```bash
+solar-audit-sol-execbench-corpus \
+  configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml \
+  --dataset-root /path/to/pinned-official-dataset \
+  --artifact-root /path/to/formal-artifacts \
+  --output /tmp/official-corpus-audit.yaml
+```
+
+The aggregate corpus gate requires operation-family, precision,
+forward/backward, dynamic-shape, and structured-input coverage. It does not
+claim that every operation supports every pass or dtype. Unsupported AMD
+libraries/formats and deterministic OOMs are recorded without a fallback.
 
 ## Executable ROCm correctness
 

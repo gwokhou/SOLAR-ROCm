@@ -170,6 +170,12 @@ class EinsumAnalyzer:
                 return "bmm"
             return "matmul"
 
+        # Indexed writes must be recognized before the substring-based
+        # elementwise ``*_add`` rules below.  Treating ``index_add_`` as a
+        # plain add erases its index/source operands and atomic side effect.
+        if op in {"index_add", "index_copy", "index_put", "scatter", "scatter_add"}:
+            return op
+
         # Loss functions - must check BEFORE binary ops!
         # These contain "div", "sub", etc. as substrings but are loss functions
         # that typically reduce to scalar output.
@@ -211,6 +217,12 @@ class EinsumAnalyzer:
             return "mul"
         if op == "div" or op.endswith(".div") or op.endswith("_div"):
             return "div"
+        if op in {"bitwise_and", "__and__"} or op.endswith(".bitwise_and"):
+            return "bitwise_and"
+        if op == "masked_fill" or op.endswith(".masked_fill"):
+            return "masked_fill"
+        if op in {"bitwise_not", "__invert__"} or op.endswith(".bitwise_not"):
+            return "bitwise_not"
         # Comparison (elementwise, same shape as input)
         if op in ("eq", "__eq__") or op.endswith(".eq") or op.endswith("_eq"):
             return "eq"

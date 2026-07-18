@@ -3,9 +3,20 @@
 
 # ROCm executable benchmarking
 
-SOLAR keeps the paper's published lower bound authoritative:
+SOLAR keeps published architecture limits authoritative and accounts for every
+executable compute node with the versioned `amd_resource_v1` model:
 
-`TSOL = max(Σp(2 × MACp / published peak throughputp), io_lower_bound_bytes / published memory bandwidth)`
+`resource_time[r] = Σmode(resource_work[r, mode] / published_rate[r, mode])`
+
+`TSOL = max(max_r(resource_time[r]), io_lower_bound_bytes / published memory bandwidth)`
+
+The complete formal resource set is MFMA, VALU, SFU, reduction, atomic,
+scan/sort, and conversion (including casts, dequantization, and accumulation
+modes). Work sharing a resource is summed; different resources and memory are
+allowed perfect overlap. An executable node that is neither exactly modeled
+nor explicitly memory/view-only makes official analysis fail closed. MAC/FLOP
+totals remain useful diagnostics, but they are not a substitute for non-MFMA
+work in TSOL.
 
 `io_lower_bound_bytes` is the deduplicated graph-external compulsory traffic
 plus the safely composable capacity-constrained Orojenesis excess. Plain
@@ -18,7 +29,10 @@ passes, the baseline environment matches exactly, and AMD-SMI reports
 
 `score = (Tb - TSOL) / ((Tk - TSOL) + (Tb - TSOL))`
 
-`Tb <= TSOL` and `Tk < TSOL` are audit failures and are not clipped.
+`Tb <= TSOL` and `Tk < TSOL` are audit failures and are not clipped. In a
+publishable, clock-locked run, a correct measured p50 below TSOL is emitted as
+`status: bound_violation` with hashes, timings, and the observed/theoretical
+ratio; the score is withheld pending a resource/profile audit.
 
 ## Package contracts
 
@@ -62,7 +76,58 @@ implicit or nearest-match baseline selection.
 
 The resulting `evaluation.yaml` contains raw samples, p20/p50/p80/p95, IQR,
 mean, population standard deviation, theoretical and calibrated bounds,
-correctness, score, capabilities, and structured failure states.
+correctness, score, capabilities, `bound_audit`, and structured failure states.
+
+## RX 9060 XT resource audit
+
+The bundled `gfx1200` profile revision `rx9060xt-amd-resource-v1` binds its
+published limits to the locked-clock local audit at
+`configs/arch/evidence/RX_9060_XT_resource_audit.yaml` (SHA-256
+`ca91342d312ef98c64b60ff081c8a318df4bd896c4f5c190995690c76c0a5522`).
+The evidence records ROCm/device identity, source hashes, clock state, raw
+timings, stability, and measured-to-published ratios for every resource plus
+HBM. Measured calibration is an audit of the conservative published ceilings;
+it never replaces a formal denominator.
+
+Reproduce it on the same GPU with:
+
+```bash
+solar-calibrate-rocm \
+  --arch-config RX_9060_XT \
+  --timing-profile official \
+  --output /tmp/RX_9060_XT_resource_audit.yaml
+```
+
+Evidence from other hardware must use its own architecture profile and audit.
+No cross-hardware extrapolation is claimed by the bundled local audit.
+
+## Pinned official representative corpus
+
+`configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml` pins ten entries from
+`nvidia/SOL-ExecBench` revision
+`63699402f003496acc3af4eb534a5304a8ac1ea9`, including attention, norm, MoE,
+SSM, convolution, BF16/FP32, forward/backward, dynamic shapes, and structured
+inputs. Eight compatible entries have replayable formal artifacts and
+independent FLOP, byte, and resource-counter goldens. The official NVIDIA
+E4M3FN FP8 and NVFP4 entries are retained as explicit
+`unsupported_quantization_format` results; they are not converted to AMD FNUZ,
+shrunk, sent to CPU, or otherwise replaced.
+
+Given an independently obtained copy of that exact official revision, audit it
+with:
+
+```bash
+solar-audit-sol-execbench-corpus \
+  configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml \
+  --dataset-root /path/to/pinned-official-dataset \
+  --artifact-root /path/to/formal-artifacts \
+  --output /tmp/RX_9060_XT_SOL_EXECBENCH_audit.yaml
+```
+
+The checked local result is
+`configs/corpus/evidence/RX_9060_XT_SOL_EXECBENCH_audit.yaml`. Every
+compatibility record must contain `fallbacks_used: []`; incompatibility and OOM
+are outcomes to record, not reasons to mutate the workload.
 
 ## Timing profiles
 

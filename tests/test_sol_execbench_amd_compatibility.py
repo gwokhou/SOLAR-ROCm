@@ -70,6 +70,25 @@ def test_cycle_dependency_is_recorded_without_fallback(tmp_path: Path) -> None:
     assert result["fallbacks_used"] == []
 
 
+def test_nvidia_fp8_reference_is_not_substituted_on_amd(tmp_path: Path) -> None:
+    problem = _problem(
+        tmp_path,
+        "import torch\n"
+        "def run(x):\n"
+        "    return x.to(torch.float8_e4m3fn).float()\n",
+    )
+    auditor = AmdCompatibilityAuditor(problem)
+    auditor.environment = _environment(1024)
+    result = auditor.audit(problem.workloads[0], execute=False)
+
+    assert result["status"] == "incompatible"
+    assert result["reason_code"] == "unsupported_quantization_format"
+    assert result["evidence"]["policy"] == (
+        "AMD formats are not substituted for NVIDIA formats"
+    )
+    assert result["fallbacks_used"] == []
+
+
 def test_static_capacity_rejection_is_evidence_backed(tmp_path: Path) -> None:
     problem = _problem(tmp_path)
     auditor = AmdCompatibilityAuditor(problem)

@@ -33,9 +33,16 @@ runtime_seconds = max(compute_seconds, memory_seconds)
 ```
 
 Where:
-- `compute_seconds = 2 × total_matrix_macs / peak_operations_per_second`
+- `resource_seconds[r] = Σmode(resource_work[r, mode] / published_rate[r, mode])`
+- `compute_seconds = max_r(resource_seconds[r])`
 - `memory_seconds = total_memory_bytes / memory_bandwidth_bytes_per_second`
 - **Arithmetic Intensity** = total_macs / total_memory_bytes
+
+The versioned AMD resource set is MFMA, VALU, SFU, reduction, atomic,
+scan/sort, and conversion. This makes casts, dequantization, accumulation,
+normalization, indexed updates, and other non-matrix work part of the formal
+bound. Operations sharing a resource serialize; independent resources may
+overlap. Official analysis rejects an unclassified executable compute node.
 
 The YAML output also reports cycles for diagnostics. Solar derives those from
 the normalized AMD profile clock; the formal lower bound is the per-second
@@ -58,7 +65,7 @@ Total:      unfused_elements   = Σ_i unfused_elements_i
 ### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
 unfused_runtime_ms = max(
-    2 × total_macs / peak_operations_per_second,
+    max_r(resource_seconds[r]),
     unfused_bytes / memory_bandwidth_bytes_per_second,
 ) × 1000
 ```
@@ -98,7 +105,7 @@ Graph level:
 ### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
 fused_runtime_ms = max(
-    2 × total_macs / peak_operations_per_second,
+    max_r(resource_seconds[r]),
     fused_bytes / memory_bandwidth_bytes_per_second,
 ) × 1000
 ```
@@ -144,7 +151,7 @@ formal scoring fails if no solver layer is safely composable.
 ### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
 fused_prefetched_runtime_ms = max(
-    2 × total_macs / peak_operations_per_second,
+    max_r(resource_seconds[r]),
     fused_prefetched_bytes / memory_bandwidth_bytes_per_second,
 ) × 1000
 ```
@@ -183,6 +190,13 @@ total:
   macs: 1000000                    # Total multiply-accumulate operations
   flops: 2000000                   # Total floating-point operations (2 × MACs)
   other_ops: 50000                 # Total scalar/vector elementwise/reduction ops
+  resource_work:                   # Exact hardware-independent counters
+    mfma: {fp16->fp32: 2000000}
+    reduction: {fp32: 50000}
+  resource_seconds:                # Work divided by published profile rates
+    mfma: 0.000001
+    reduction: 0.000002
+  compute_resource: reduction      # Maximum resource time determines compute SOL
   unfused_elements: 25000000       # Unfused memory elements (all tensor I/O)
   fused_elements: 10000000         # Fused memory elements (intermediates excluded)
   fused_prefetched_elements: 12000000  # Tile-aware I/O lower-bound elements

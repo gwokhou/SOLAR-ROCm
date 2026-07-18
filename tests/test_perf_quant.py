@@ -333,9 +333,9 @@ class TestPerfSMCycles:
 
     def test_elementwise_only_sm_cycles_nonzero(self, tmp_path):
         """Elementwise-only model: other_ops > 0, macs == 0.
-        compute_scalar_cycles > 0 (informational), but compute_cycles = tc_cycles
-        because elementwise ops are memory-bound and already captured by
-        memory cycles in the roofline model."""
+        The versioned AMD resource model makes VALU work a formal compute
+        constraint even when the memory roofline remains the total bottleneck.
+        """
         analysis, perf = self._analyze_and_predict(tmp_path, ELEMENTWISE_MODEL_SOURCE)
 
         assert analysis["total"]["macs"] == 0
@@ -345,7 +345,7 @@ class TestPerfSMCycles:
         assert perf["unfused"]["compute_scalar_cycles"] > 0
         assert (
             perf["unfused"]["compute_cycles"]
-            == perf["unfused"]["compute_matrix_cycles"]
+            == perf["unfused"]["compute_scalar_cycles"]
         )
 
     def test_elementwise_only_total_other_ops_in_workload(self, tmp_path):

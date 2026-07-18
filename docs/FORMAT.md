@@ -128,6 +128,7 @@ Produced by `solar.analysis.graph_analyzer`.
 | `macs` | `int` | Multiply-accumulate operations (non-zero only for `is_real_einsum: true`) |
 | `other_ops` | `int` | Scalar/vector elementwise and reduction operations |
 | `flops` | `int` | `2 * macs` |
+| `resources` | `dict` | Versioned per-layer resource classification: `work`, `classification`, exact formulas, and an exemption reason where applicable |
 | `unfused_elements` | `int` | `input_elements + output_elements` (all DRAM traffic if nothing fused) |
 | `orojenesis_elements` | `float \| null` | Diagnostic selected solver traffic in fallback element units |
 | `fused_elements` | `int` | External I/O only (intermediates excluded) |
@@ -152,6 +153,10 @@ Produced by `solar.analysis.graph_analyzer`.
 | `macs` | `int` | Sum of all layer MACs |
 | `other_ops` | `int` | Sum of all layer other_ops |
 | `flops` | `int` | `2 * macs` |
+| `macs_by_precision` | `dict[str, int]` | Matrix work grouped by actual operation precision |
+| `resource_work` | `dict[str, dict[str, int]]` | Hardware-independent work grouped by AMD resource and mode |
+| `resource_seconds` | `dict[str, float]` | Per-resource `sum(work / published_rate)` using the bound profile |
+| `compute_resource` | `str \| null` | Resource with the largest formal compute time |
 | `unfused_elements` | `int` | Sum across layers |
 | `orojenesis_elements` | `float \| null` | Sum of selected solver traffic in fallback element units |
 | `fused_elements` | `int` | Deduplicated external I/O (shared tensors counted once) |
@@ -159,8 +164,8 @@ Produced by `solar.analysis.graph_analyzer`.
 | `fused_prefetched_elements` | `int` | Compatibility element count for graph-external I/O |
 | `fused_prefetched_bytes` | `float` | Formal tile-aware traffic when available |
 | `io_lower_bound_bytes` | `float` | Compulsory I/O plus safely composable solver excess |
-| `lower_bound_seconds` | `float \| null` | `max(compute, io_lower_bound / bandwidth)` |
-| `lower_bound_components` | `dict \| null` | Compute, fused/prefetched memory, and overlap components |
+| `lower_bound_seconds` | `float \| null` | `max(max(resource_seconds), io_lower_bound / bandwidth)` |
+| `lower_bound_components` | `dict \| null` | Per-resource compute, bottleneck resource, fused/prefetched memory, and overlap components |
 | `model_io_elements` | `int` | Per-op sum (may double-count shared inputs; diagnostic) |
 | `intermediate_elements` | `int` | Total fusable elements |
 | `num_intermediate_tensors` | `int` | Count of intermediate tensor names |
@@ -176,6 +181,7 @@ Produced by `solar.analysis.graph_analyzer`.
 | `fusion` | `dict \| null` | Edge legality decisions, regions, liveness, and hierarchy pressure |
 | `orojenesis` | `dict` | Pinned solver identity, evidence files, curve, selected point and coverage |
 | `architecture` | `dict \| null` | Architecture profile used for the formal bound |
+| `resource_model` | `dict` | Version, modeled/exempt/unclassified coverage, and fail-closed state |
 | `bound_kind` | `str` | `capacity_constrained_tile_aware_v1` or `diagnostic` |
 
 ---
@@ -210,6 +216,11 @@ Produced by `solar.perf.perf_model`.
 | `operations_per_cycle` | `float` | Matrix-operation throughput used for cycle diagnostics |
 | `scalar_operations_per_cycle` | `float` | Scalar/vector throughput used for diagnostics |
 | `peak_ops_per_second` | `mapping` | Precision-keyed published operation throughput |
+| `resource_model_version` | `str` | Version matching analysis resource counters |
+| `resource_limits` | `mapping` | Published upper rate for every resource/mode |
+| `resource_limit_sources` | `mapping` | Source URL or derivation for each resource limit |
+| `profile_revision` | `str` | Immutable resource-profile revision |
+| `audit_evidence` | `mapping` | Hash-bound local hardware audit identity |
 | `ridge_point` | `float` | Arithmetic intensity at roofline knee |
 
 ### `workload` dict
@@ -219,6 +230,9 @@ Produced by `solar.perf.perf_model`.
 | `total_macs` | `int` | Total MACs from analysis |
 | `total_other_ops` | `int` | Total elementwise/reduction ops |
 | `total_flops` | `int` | `2 * total_macs` |
+| `resource_model_version` | `str` | Version used by the source analysis |
+| `resource_work` | `mapping` | Exact graph resource counters |
+| `resource_cycles` | `mapping` | Per-resource time converted using the profile clock |
 | `bytes_per_element` | `float` | Effective bytes per element |
 | `quant_orig_dtype` | `str` | *(optional)* Original quantized dtype if metadata present |
 
@@ -230,11 +244,11 @@ Produced by `solar.perf.perf_model`.
 | `memory_elements` | `int` | Total DRAM-accessed elements |
 | `memory_bytes` | `int` | `memory_elements * bytes_per_element` |
 | `compute_matrix_cycles` | `int` | Matrix-operation cycles (informational) |
-| `compute_scalar_cycles` | `int` | Scalar/vector cycles (informational; not included in SOL) |
-| `compute_cycles` | `int` | Matrix-operation cycles used in SOL |
+| `compute_scalar_cycles` | `int` | Largest non-MFMA resource time expressed in cycles |
+| `compute_cycles` | `int` | Maximum across all modeled AMD resource cycles used in SOL |
 | `memory_cycles` | `int` | Memory time converted to diagnostic cycles using the normalized profile |
 | `total_cycles` | `int` | `max(compute_cycles, memory_cycles)` |
-| `runtime_ms` | `float` | `max(2 * total_macs / peak_ops_per_second, memory_bytes / memory_bandwidth_bytes_per_second) * 1000` |
+| `runtime_ms` | `float` | `max(max(resource_cycles), memory_cycles) / clock_hz * 1000` |
 | `arithmetic_intensity` | `float` | `total_macs / memory_bytes` |
 | `bottleneck` | `str` | `"compute"` or `"memory"` |
 

@@ -54,6 +54,7 @@ class AnalysisArtifact:
     flops: float
     fused_bytes: float
     macs_by_precision: dict[str, float]
+    resource_work: dict[str, dict[str, float]]
     lower_bound_seconds: float
     architecture_hash: str
 
@@ -103,6 +104,9 @@ class AnalysisArtifact:
             "fused_bytes",
             "io_lower_bound_bytes",
             "macs_by_precision",
+            "resource_work",
+            "resource_seconds",
+            "compute_resource",
             "lower_bound_seconds",
         }
         if not required.issubset(total):
@@ -112,6 +116,26 @@ class AnalysisArtifact:
         macs_by_precision = {
             str(key).lower(): float(value)
             for key, value in (total.get("macs_by_precision") or {}).items()
+        }
+        from solar.analysis.resources import (
+            RESOURCE_MODEL_VERSION,
+            validate_resource_work,
+        )
+
+        resource_metadata = metadata.get("resource_model") or {}
+        if resource_metadata.get("version") != RESOURCE_MODEL_VERSION:
+            raise ValueError(
+                f"benchmark analysis requires resource model {RESOURCE_MODEL_VERSION}"
+            )
+        coverage = resource_metadata.get("coverage") or {}
+        if int(coverage.get("unclassified", -1)) != 0 or not bool(
+            resource_metadata.get("fail_closed")
+        ):
+            raise ValueError("benchmark resource classification must be fail-closed")
+        resource_work = validate_resource_work(total.get("resource_work"))
+        serialized_resource_seconds = {
+            str(key): float(value)
+            for key, value in (total.get("resource_seconds") or {}).items()
         }
         flops = float(total["flops"])
         fused_bytes = float(total["fused_bytes"])
@@ -126,6 +150,12 @@ class AnalysisArtifact:
                     io_lower_bound_bytes,
                     lower_bound_seconds,
                     *macs_by_precision.values(),
+                    *(
+                        amount
+                        for modes in resource_work.values()
+                        for amount in modes.values()
+                    ),
+                    *serialized_resource_seconds.values(),
                 )
             )
             or flops < 0
@@ -133,6 +163,7 @@ class AnalysisArtifact:
             or io_lower_bound_bytes < fused_bytes
             or lower_bound_seconds < 0
             or any(value < 0 for value in macs_by_precision.values())
+            or any(value < 0 for value in serialized_resource_seconds.values())
         ):
             raise ValueError("analysis compute and traffic totals must be non-negative")
         if abs(2.0 * sum(macs_by_precision.values()) - flops) > max(
@@ -181,11 +212,13 @@ class AnalysisArtifact:
                 str(key).lower(): float(value)
                 for key, value in (derived_total.get("macs_by_precision") or {}).items()
             },
+            "resource_work": validate_resource_work(derived_total.get("resource_work")),
         }
         artifact_identity = {
             "flops": flops,
             "fused_bytes": fused_bytes,
             "macs_by_precision": macs_by_precision,
+            "resource_work": resource_work,
         }
         if derived_identity != artifact_identity:
             raise ValueError("analysis totals drifted from the bound source graph")
@@ -337,8 +370,23 @@ class AnalysisArtifact:
                 "analysis I/O lower bound drifted from Orojenesis evidence"
             )
         profile = ArchitectureProfile.load(metadata.get("architecture") or {})
-        expected_seconds = profile.theoretical_seconds_by_precision(
-            macs_by_precision, expected_io_bytes
+        expected_resource_seconds = profile.resource_seconds(resource_work)
+        if serialized_resource_seconds != expected_resource_seconds:
+            raise ValueError(
+                "analysis resource seconds drifted from architecture limits"
+            )
+        expected_compute_resource = (
+            max(
+                sorted(expected_resource_seconds),
+                key=expected_resource_seconds.__getitem__,
+            )
+            if expected_resource_seconds
+            else None
+        )
+        if total.get("compute_resource") != expected_compute_resource:
+            raise ValueError("analysis compute resource bottleneck drifted")
+        expected_seconds = profile.theoretical_seconds_by_resources(
+            resource_work, expected_io_bytes
         )
         if lower_bound_seconds != expected_seconds:
             raise ValueError("analysis time bound drifted from audited I/O evidence")
@@ -352,6 +400,7 @@ class AnalysisArtifact:
             flops=flops,
             fused_bytes=fused_bytes,
             macs_by_precision=macs_by_precision,
+            resource_work=resource_work,
             lower_bound_seconds=lower_bound_seconds,
             architecture_hash=canonical_hash(architecture_identity),
         )
@@ -447,6 +496,10 @@ class CompatibilityArtifact:
         if hashlib.sha256(artifact_path.read_bytes()).hexdigest() != digest:
             raise ValueError(f"SHA-256 mismatch: {path}")
         artifact = yaml.safe_load(artifact_path.read_text()) or {}
+        if int(artifact.get("schema_version", 0)) != 2:
+            raise ValueError("compatibility artifact must use schema_version=2")
+        if artifact.get("fallbacks_used") != []:
+            raise ValueError("compatibility artifact must not use fallbacks")
         status = str(artifact.get("status", ""))
         reason_code = str(artifact.get("reason_code", ""))
         if status not in {
@@ -458,6 +511,10 @@ class CompatibilityArtifact:
             raise ValueError("compatibility artifact has an invalid status")
         if not reason_code:
             raise ValueError("compatibility artifact requires a reason_code")
+        if status == "compatible" and reason_code != "compatible":
+            raise ValueError("compatible evidence has an inconsistent reason_code")
+        if status != "compatible" and reason_code == "compatible":
+            raise ValueError("non-compatible evidence has an inconsistent reason_code")
         return cls(path=path, sha256=digest, status=status, reason_code=reason_code)
 
 

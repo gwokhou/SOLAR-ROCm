@@ -59,6 +59,11 @@ class ArchitectureProfile:
     l2_bytes: int
     last_level_cache_bytes: int
     peak_ops_per_second: dict[str, float] = field(default_factory=dict)
+    resource_model_version: str = ""
+    resource_limits: dict[str, dict[str, float]] = field(default_factory=dict)
+    resource_limit_sources: dict[str, str] = field(default_factory=dict)
+    profile_revision: str = ""
+    audit_evidence: dict[str, Any] = field(default_factory=dict)
     precision_aliases: dict[str, str] = field(default_factory=dict)
     clock_hz: float | None = None
     source: str | None = None
@@ -105,6 +110,20 @@ class ArchitectureProfile:
             peak_ops_per_second={
                 str(k).lower(): float(v) for k, v in data["peak_ops_per_second"].items()
             },
+            resource_model_version=str(data.get("resource_model_version", "")),
+            resource_limits={
+                str(resource_name).lower(): {
+                    str(mode).lower(): float(rate)
+                    for mode, rate in (modes or {}).items()
+                }
+                for resource_name, modes in (data.get("resource_limits") or {}).items()
+            },
+            resource_limit_sources={
+                str(key).lower(): str(value)
+                for key, value in (data.get("resource_limit_sources") or {}).items()
+            },
+            profile_revision=str(data.get("profile_revision", "")),
+            audit_evidence=dict(data.get("audit_evidence") or {}),
             precision_aliases={
                 str(k).lower(): str(v).lower()
                 for k, v in (data.get("precision_aliases") or {}).items()
@@ -129,6 +148,45 @@ class ArchitectureProfile:
             value <= 0 for value in self.peak_ops_per_second.values()
         ):
             raise ValueError("at least one positive peak throughput is required")
+        from solar.analysis.resources import RESOURCE_MODEL_VERSION
+
+        if self.resource_model_version != RESOURCE_MODEL_VERSION:
+            raise ValueError(
+                f"architecture resource_model_version must be {RESOURCE_MODEL_VERSION}"
+            )
+        required_resources = {
+            "mfma",
+            "valu",
+            "sfu",
+            "reduction",
+            "atomic",
+            "scan_sort",
+            "conversion",
+        }
+        if set(self.resource_limits) != required_resources:
+            missing = sorted(required_resources - set(self.resource_limits))
+            extra = sorted(set(self.resource_limits) - required_resources)
+            raise ValueError(
+                f"resource_limits must define the complete AMD resource set; "
+                f"missing={missing}, extra={extra}"
+            )
+        for resource_name, modes in self.resource_limits.items():
+            if not modes or any(value <= 0 for value in modes.values()):
+                raise ValueError(
+                    f"resource limit rates for {resource_name} must be positive"
+                )
+            if resource_name not in self.resource_limit_sources:
+                raise ValueError(
+                    f"resource limit source is required for {resource_name}"
+                )
+        if not self.profile_revision:
+            raise ValueError("architecture profile_revision is required")
+        evidence_sha = str(self.audit_evidence.get("sha256", ""))
+        if evidence_sha and (
+            len(evidence_sha) != 64
+            or any(character not in "0123456789abcdef" for character in evidence_sha)
+        ):
+            raise ValueError("audit_evidence.sha256 must be a lowercase SHA-256")
         names = [level.name for level in self.memory_hierarchy]
         if len(names) != len(set(names)):
             raise ValueError("memory hierarchy level names must be unique")
@@ -177,6 +235,51 @@ class ArchitectureProfile:
         memory_seconds = float(fused_bytes) / self.memory_bandwidth_bytes_per_second
         return max(compute_seconds, memory_seconds)
 
+    def resource_rate_for(self, resource: str, mode: str) -> float:
+        """Return the declared architectural upper rate for one resource mode."""
+        resource_name = str(resource).lower()
+        mode_name = str(mode).lower()
+        try:
+            modes = self.resource_limits[resource_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"Resource {resource!r} is not supported by {self.name}"
+            ) from exc
+        if mode_name in modes:
+            return modes[mode_name]
+        if "generic" in modes:
+            return modes["generic"]
+        raise ValueError(
+            f"Resource mode {resource_name}:{mode_name} is not supported by {self.name}"
+        )
+
+    def resource_seconds(
+        self, resource_work: Mapping[str, Mapping[str, float]]
+    ) -> dict[str, float]:
+        """Reduce graph counters to per-pipeline times.
+
+        Work sharing a resource is serialized and summed.  Independent AMD
+        resources may overlap, so callers take the maximum across resources.
+        """
+        return {
+            str(resource): sum(
+                float(amount) / self.resource_rate_for(str(resource), str(mode))
+                for mode, amount in modes.items()
+            )
+            for resource, modes in resource_work.items()
+        }
+
+    def theoretical_seconds_by_resources(
+        self,
+        resource_work: Mapping[str, Mapping[str, float]],
+        fused_bytes: float,
+    ) -> float:
+        """Return the resource-aware compute/memory overlapped SOL bound."""
+        resource_times = self.resource_seconds(resource_work)
+        compute_seconds = max(resource_times.values(), default=0.0)
+        memory_seconds = float(fused_bytes) / self.memory_bandwidth_bytes_per_second
+        return max(compute_seconds, memory_seconds)
+
     @property
     def cache_flush_bytes(self) -> int:
         """Return the largest declared AMD cache that cold-cache timing must evict."""
@@ -193,6 +296,14 @@ class ArchitectureProfile:
             "l2_bytes": self.l2_bytes,
             "last_level_cache_bytes": self.last_level_cache_bytes,
             "peak_ops_per_second": dict(self.peak_ops_per_second),
+            "resource_model_version": self.resource_model_version,
+            "resource_limits": {
+                resource: dict(modes)
+                for resource, modes in self.resource_limits.items()
+            },
+            "resource_limit_sources": dict(self.resource_limit_sources),
+            "profile_revision": self.profile_revision,
+            "audit_evidence": dict(self.audit_evidence),
             "precision_aliases": dict(self.precision_aliases),
             "clock_hz": self.clock_hz,
             "source": self.source,

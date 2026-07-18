@@ -60,6 +60,11 @@ from solar.einsum.semantics import (
 )
 from solar.analysis.fusion import FusionPlanner
 from solar.analysis.orojenesis import OrojenesisRunner, select_capacity_point
+from solar.analysis.resources import (
+    RESOURCE_MODEL_VERSION,
+    classify_layer_resources,
+    merge_resource_work,
+)
 from solar.rocm.architecture import ArchitectureProfile
 from solar.common.constants import (
     BYTES_PER_ELEMENT,
@@ -211,6 +216,11 @@ class EinsumGraphAnalyzer:
                     print("Debug: failed to copy einsum_graph.yaml")
 
         all_layers: Dict[str, Any] = graph.get("layers") or {}
+        declared_graph_outputs = set(
+            graph.get("outputs")
+            or (graph.get("graph_signature") or {}).get("joint_outputs")
+            or []
+        )
         if strict:
             failures: List[str] = []
             for layer_id, layer in all_layers.items():
@@ -426,6 +436,8 @@ class EinsumGraphAnalyzer:
         total_unfused_bytes = 0.0
         total_intermediate_bytes = 0.0
         macs_by_precision: Dict[str, int] = defaultdict(int)
+        resource_work: dict[str, dict[str, int]] = {}
+        resource_coverage = {"modeled": 0, "exempt": 0, "unclassified": 0}
 
         # Deduplicated external (non-intermediate) tensor tracking for the
         # fused / fused_prefetched model.  When the same external tensor
@@ -762,6 +774,24 @@ class EinsumGraphAnalyzer:
             if macs:
                 macs_by_precision[compute_precision] += int(macs)
 
+            layer_resources = classify_layer_resources(
+                layer,
+                macs=int(macs),
+                fallback_precision=fallback_precision,
+                strict=strict,
+            )
+            if layer_id in _orphaned_layers:
+                layer_resources = {
+                    "model_version": RESOURCE_MODEL_VERSION,
+                    "work": {},
+                    "classification": "exempt",
+                    "exemption_reason": "orphaned_dead_end",
+                    "formulas": [],
+                }
+            merge_resource_work(resource_work, layer_resources["work"])
+            classification = str(layer_resources["classification"])
+            resource_coverage[classification] += 1
+
             # ── Step 4: Classify inputs as external vs graph-internal ──
             # Uses memory_reads (already corrected) so no re-scanning needed.
             # Classify each input tensor:
@@ -817,22 +847,39 @@ class EinsumGraphAnalyzer:
             # Classify outputs: intermediate if consumed by a real
             # non-transparent op, or by views that lead to one.
             output_name_list = tensor_names.get("outputs") or []
-            output_is_intermediate = False
+            output_intermediate_flags: list[bool] = []
             for oname in output_name_list:
+                is_intermediate = False
                 for consumer_id in tensor_consumers.get(oname) or set():
                     if consumer_id not in transparent_layer_ids:
-                        output_is_intermediate = True
+                        is_intermediate = True
                         break
                     if _has_real_consumer(consumer_id):
-                        output_is_intermediate = True
+                        is_intermediate = True
                         break
-                if output_is_intermediate:
-                    break
+                output_intermediate_flags.append(is_intermediate)
+            output_external_flags = [
+                str(name) in declared_graph_outputs or not is_intermediate
+                for name, is_intermediate in zip(
+                    output_name_list, output_intermediate_flags
+                )
+            ]
+            output_is_intermediate = any(output_intermediate_flags)
 
             # Intermediate output elems: written to cache (fused) not DRAM
-            intermediate_output_elems = output_elems if output_is_intermediate else 0
-            intermediate_output_bytes = (
-                float(sum(output_bytes)) if output_is_intermediate else 0.0
+            intermediate_output_elems = sum(
+                value
+                for value, is_intermediate in zip(
+                    memory_writes, output_intermediate_flags
+                )
+                if is_intermediate
+            )
+            intermediate_output_bytes = sum(
+                value
+                for value, is_intermediate in zip(
+                    output_bytes, output_intermediate_flags
+                )
+                if is_intermediate
             )
             # Total intermediate elems for this layer (inputs + outputs)
             layer_intermediate_elems = (
@@ -843,17 +890,25 @@ class EinsumGraphAnalyzer:
             )
 
             # Model output elems: final graph outputs that must go to DRAM
-            model_output_elems = output_elems if not output_is_intermediate else 0
-            model_output_bytes = (
-                float(sum(output_bytes)) if not output_is_intermediate else 0.0
+            model_output_elems = sum(
+                value
+                for value, is_external in zip(memory_writes, output_external_flags)
+                if is_external
+            )
+            model_output_bytes = sum(
+                value
+                for value, is_external in zip(output_bytes, output_external_flags)
+                if is_external
             )
             # Per-op model I/O: external inputs + model outputs (no intermediates)
             model_io_elems = model_input_elems + model_output_elems
             model_io_bytes = external_input_bytes + model_output_bytes
 
             # Track unique external outputs for deduplication.
-            if not output_is_intermediate:
-                for i, oname in enumerate(output_name_list):
+            for i, (oname, is_external) in enumerate(
+                zip(output_name_list, output_external_flags)
+            ):
+                if is_external:
                     elems = memory_writes[i] if i < len(memory_writes) else 0
                     byte_count = output_bytes[i] if i < len(output_bytes) else 0.0
                     unique_external_outputs[oname] = max(
@@ -875,6 +930,7 @@ class EinsumGraphAnalyzer:
                 "other_ops": other_ops,
                 "flops": flops,
                 "compute_precision": compute_precision if macs else None,
+                "resources": layer_resources,
                 "unfused_elements": unfused_elems,
                 "unfused_bytes": unfused_bytes,
                 "orojenesis_elements": None,
@@ -955,7 +1011,7 @@ class EinsumGraphAnalyzer:
         audited_fused_bytes = total_fused_bytes
         audited_prefetched_bytes = total_fused_bytes
         formal_bound = False
-        lower_bound_components: dict[str, float] | None = None
+        lower_bound_components: dict[str, Any] | None = None
         if semantic_graph and semantic_complete:
             if isinstance(architecture, ArchitectureProfile):
                 profile = architecture
@@ -978,7 +1034,7 @@ class EinsumGraphAnalyzer:
                 raise ValueError(
                     "strict formal analysis requires the pinned Orojenesis toolchain"
                 )
-            if orojenesis_runner is not None:
+            if orojenesis_runner is not None and einsum_layers:
                 orojenesis["status"] = "complete"
                 last_cache = None
                 if profile is not None:
@@ -1100,11 +1156,15 @@ class EinsumGraphAnalyzer:
                 formal_bound = True
 
         lower_bound_seconds = None
+        resource_seconds: dict[str, float] = {}
+        compute_resource: str | None = None
         if profile is not None and semantic_graph and semantic_complete:
-            compute_seconds = sum(
-                2.0 * float(macs) / profile.peak_for(precision_name)
-                for precision_name, macs in macs_by_precision.items()
-            )
+            resource_seconds = profile.resource_seconds(resource_work)
+            compute_seconds = max(resource_seconds.values(), default=0.0)
+            if resource_seconds:
+                compute_resource = max(
+                    sorted(resource_seconds), key=resource_seconds.__getitem__
+                )
             fused_memory_seconds = (
                 audited_fused_bytes / profile.memory_bandwidth_bytes_per_second
             )
@@ -1114,6 +1174,8 @@ class EinsumGraphAnalyzer:
             lower_bound_seconds = max(compute_seconds, prefetched_memory_seconds)
             lower_bound_components = {
                 "compute_seconds": compute_seconds,
+                "resource_seconds": resource_seconds,
+                "compute_resource": compute_resource,
                 "fused_memory_seconds": fused_memory_seconds,
                 "fused_unoverlapped_seconds": compute_seconds + fused_memory_seconds,
                 "prefetched_memory_seconds": prefetched_memory_seconds,
@@ -1134,6 +1196,12 @@ class EinsumGraphAnalyzer:
                 "other_ops": int(total_other_ops),
                 "flops": int(total_flops),
                 "macs_by_precision": dict(sorted(macs_by_precision.items())),
+                "resource_work": {
+                    resource: dict(sorted(modes.items()))
+                    for resource, modes in sorted(resource_work.items())
+                },
+                "resource_seconds": resource_seconds,
+                "compute_resource": compute_resource,
                 "unfused_elements": int(total_unfused_elems),
                 "unfused_bytes": total_unfused_bytes,
                 "orojenesis_elements": (
@@ -1178,6 +1246,11 @@ class EinsumGraphAnalyzer:
                     else "diagnostic"
                 ),
                 "architecture": profile.to_dict() if profile is not None else None,
+                "resource_model": {
+                    "version": RESOURCE_MODEL_VERSION,
+                    "coverage": dict(resource_coverage),
+                    "fail_closed": bool(strict),
+                },
             },
         }
 

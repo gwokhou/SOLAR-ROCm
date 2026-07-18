@@ -14,7 +14,7 @@ This ROCm port keeps the original five-stage analysis pipeline and adds an execu
 - **Einsum Conversion**: Convert PyTorch operations to einsum notation with automatic rank renaming
 - **Graph Visualization**: Generate PDF visualizations of einsum graphs
 - **Hardware-Independent Analysis**: Compute MACs, FLOPs, and memory footprints
-- **Performance Prediction**: AMD ROCm architecture-aware roofline modeling (RX 9060 XT)
+- **Performance Prediction**: Fail-closed AMD MFMA/VALU/SFU/reduction/atomic/scan/conversion roofline modeling (RX 9060 XT)
 - **Executable ROCm Evaluation**: Auditable PyTorch, Triton, HIP/C++, and AMD library kernel timing
 - **Timeloop / Orojenesis Export**: Convert to Timeloop workload format for architectural exploration
 - **Benchmark Support**: Native support for kernelbench benchmark suites
@@ -143,6 +143,11 @@ The example package includes three verified solution manifests:
 Replace the `--solution` value to exercise each backend. Native compilation
 accepts `{python}`, `{staging}`, and `{gfx_target}` placeholders in the solution
 manifest.
+
+The pinned RX 9060 XT official representative corpus is documented in
+[the ROCm benchmark guide](docs/ROCM_BENCHMARKING.md). Its checked audit has
+eight replayable formal workloads and two explicit NVIDIA FP8/NVFP4
+incompatibilities; no dtype, shape, device, or backend fallback is permitted.
 
 ## Output File Formats
 

@@ -74,8 +74,45 @@ def _extract_graph(
     output: Path,
     name: str,
 ) -> Path:
+    import torch
     import torch.nn as nn
+    from torch.utils._python_dispatch import TorchDispatchMode
     from solar._vendor import torchview
+
+    tensor_inputs = {
+        index: value
+        for index, value in enumerate(inputs)
+        if isinstance(value, torch.Tensor)
+    }
+    used_input_indices: set[int] = set()
+
+    def observe(value: Any) -> None:
+        if isinstance(value, torch.Tensor):
+            used_input_indices.update(
+                index for index, tensor in tensor_inputs.items() if value is tensor
+            )
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                observe(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                observe(item)
+
+    class InputUseMode(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func: Any,
+            types: Any,
+            args: tuple[Any, ...] = (),
+            kwargs: dict[str, Any] | None = None,
+        ) -> Any:
+            observe(args)
+            observe(kwargs or {})
+            return func(*args, **(kwargs or {}))
+
+    with InputUseMode():
+        observed_outputs = reference(*inputs)
+    observe(observed_outputs)
 
     class ReferenceModule(nn.Module):
         def forward(self, *args: Any) -> Any:
@@ -96,10 +133,121 @@ def _extract_graph(
         collect_attributes=True,
     )
     TorchviewProcessor().process_graph(graph, str(output), name, module)
-    PyTorchToEinsum(strict=True).convert(
+    converted = PyTorchToEinsum(strict=True).convert(
         output / "pytorch_graph.yaml", output, copy_graph=False, enable_rename=False
     )
-    return output / "einsum_graph.yaml"
+    if converted is None:
+        raise RuntimeError("graph conversion did not produce an exact graph")
+    start_layers = [
+        layer
+        for layer in (converted.get("layers") or {}).values()
+        if str(layer.get("type", "")).lower() == "start"
+    ]
+    ordered_indices = sorted(used_input_indices)
+    if len(start_layers) != len(ordered_indices):
+        raise RuntimeError(
+            "cannot bind exact source arguments to graph inputs: "
+            f"observed={ordered_indices}, starts={len(start_layers)}"
+        )
+
+    # Torchview emits tensor-valued keyword arguments after positional start
+    # nodes, which need not match the source function's argument order.  Bind
+    # by exact shape+dtype and require a unique one-to-one assignment; never
+    # guess among same-shaped inputs.
+    candidates: list[list[int]] = []
+    for layer in start_layers:
+        shapes = (layer.get("tensor_shapes") or {}).get("outputs") or []
+        dtypes = (layer.get("tensor_dtypes") or {}).get("outputs") or []
+        if len(shapes) != 1 or len(dtypes) != 1:
+            raise RuntimeError("graph input lacks exact shape/dtype metadata")
+        candidates.append(
+            [
+                source_index
+                for source_index in ordered_indices
+                if tuple(shapes[0]) == tuple(tensor_inputs[source_index].shape)
+                and str(dtypes[0]) == str(tensor_inputs[source_index].dtype)
+            ]
+        )
+
+    bindings: list[list[int]] = []
+
+    def bind(
+        position: int,
+        chosen: list[int],
+        remaining: set[int],
+        last_ordered_index: int,
+    ) -> None:
+        if len(bindings) > 1:
+            return
+        if position == len(candidates):
+            bindings.append(list(chosen))
+            return
+        ordered_start = (
+            start_layers[position].get("source_binding") == "torchview_input_order"
+        )
+        for source_index in candidates[position]:
+            if source_index not in remaining:
+                continue
+            if ordered_start and source_index <= last_ordered_index:
+                continue
+            chosen.append(source_index)
+            bind(
+                position + 1,
+                chosen,
+                remaining - {source_index},
+                source_index if ordered_start else last_ordered_index,
+            )
+            chosen.pop()
+
+    bind(0, [], set(ordered_indices), -1)
+    if len(bindings) != 1:
+        reason = "no" if not bindings else "ambiguous"
+        raise RuntimeError(f"{reason} exact source-to-graph input binding")
+    bound_indices = bindings[0]
+    traced_graph = yaml.safe_load((output / "pytorch_graph.yaml").read_text()) or {}
+    output_nodes = [
+        (str(layer_id), layer)
+        for layer_id, layer in (traced_graph.get("layers") or {}).items()
+        if str(layer.get("type", "")).lower() == "output-tensor"
+    ]
+
+    output_candidates: list[tuple[str, list[int], str]] = []
+    for _, output_node in output_nodes:
+        producers = (output_node.get("connections") or {}).get("inputs") or []
+        if len(producers) != 1 or producers[0] not in (converted.get("layers") or {}):
+            raise RuntimeError("cannot bind exact traced graph output")
+        producer = converted["layers"][producers[0]]
+        names = (producer.get("tensor_names") or {}).get("outputs") or []
+        shapes = (producer.get("tensor_shapes") or {}).get("outputs") or []
+        dtypes = (producer.get("tensor_dtypes") or {}).get("outputs") or []
+        if len(names) != 1 or len(shapes) != 1 or len(dtypes) != 1:
+            raise RuntimeError("traced graph output producer is not single-output")
+        output_candidates.append((str(names[0]), list(shapes[0]), str(dtypes[0])))
+    observed_output_values = (
+        tuple(observed_outputs)
+        if isinstance(observed_outputs, (tuple, list))
+        else (observed_outputs,)
+    )
+    if len(output_candidates) != len(observed_output_values) or not all(
+        isinstance(value, torch.Tensor) for value in observed_output_values
+    ):
+        raise RuntimeError("cannot preserve exact reference output signature")
+    declared_outputs: list[str] = []
+    for value in observed_output_values:
+        assert isinstance(value, torch.Tensor)
+        matches = [
+            index
+            for index, (_, shape, dtype) in enumerate(output_candidates)
+            if tuple(shape) == tuple(value.shape) and dtype == str(value.dtype)
+        ]
+        if not matches:
+            raise RuntimeError("traced graph output metadata does not match reference")
+        declared_outputs.append(output_candidates.pop(matches[0])[0])
+    converted["source_input_indices"] = bound_indices
+    converted["outputs"] = declared_outputs
+    graph_path = output / "einsum_graph.yaml"
+    graph_path.write_text(yaml.safe_dump(converted, sort_keys=False))
+    return graph_path
 
 
 def _failed_result(

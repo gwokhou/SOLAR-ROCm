@@ -255,19 +255,37 @@ class EinsumGraphPerfModel:
             2.0 * clock_hz
         )
 
-        # Matrix-operation cycles (matmul/conv MACs).
-        compute_matrix_cycles = sum(compute_cycles_by_precision.values())
-        # Vector cycles (elementwise / reduction ops on scalar/vector ALUs).
-        # NOTE: Disabled for SOL computation.  Elementwise/reshape ops are
-        # memory-bound in practice — their cost is already captured by
-        # fused_memory_cycles.  Including scalar cycles here would double-count
-        # and inflate SOL by 10-34,000x for elementwise-heavy kernels.
-        # Scalar/vector cycle stats are still reported for informational purposes.
-        compute_scalar_cycles = (
-            total_other_ops / scalar_ops_per_cycle if scalar_ops_per_cycle > 0 else 0.0
-        )
-        # SOL compute = matrix/contracted-operation cycles only.
-        compute_cycles = compute_matrix_cycles
+        profile = ArchitectureProfile.load(arch)
+        resource_work = {
+            str(resource): {
+                str(mode): float(amount) for mode, amount in (modes or {}).items()
+            }
+            for resource, modes in (total.get("resource_work") or {}).items()
+        }
+        resource_cycles = {
+            resource: seconds * clock_hz
+            for resource, seconds in profile.resource_seconds(resource_work).items()
+        }
+        if resource_cycles:
+            compute_matrix_cycles = resource_cycles.get("mfma", 0.0)
+            compute_scalar_cycles = max(
+                (
+                    cycles
+                    for resource, cycles in resource_cycles.items()
+                    if resource != "mfma"
+                ),
+                default=0.0,
+            )
+            compute_cycles = max(resource_cycles.values())
+        else:
+            # Schema-v1/v2 compatibility remains diagnostic only.
+            compute_matrix_cycles = sum(compute_cycles_by_precision.values())
+            compute_scalar_cycles = (
+                total_other_ops / scalar_ops_per_cycle
+                if scalar_ops_per_cycle > 0
+                else 0.0
+            )
+            compute_cycles = compute_matrix_cycles
 
         # Memory cycles for each model (using bytes)
         unfused_mem_cycles = total_orojenesis_bytes / dram_bytes_per_cycle
@@ -301,7 +319,10 @@ class EinsumGraphPerfModel:
 
         perf: Dict[str, Any] = {
             "model": {
-                "formula": "max(total_flops / peak_ops_per_second, fused_bytes / memory_bandwidth_bytes_per_second)",
+                "formula": (
+                    "max(max_resource(sum_mode(work / published_rate)), "
+                    "memory_bytes / published_memory_bandwidth)"
+                ),
                 "precision": precision,
                 "rocm_native": str(arch.get("vendor", "")).upper() == "AMD",
             },
@@ -315,6 +336,14 @@ class EinsumGraphPerfModel:
                 "operations_per_cycle": mac_per_cycle,
                 "scalar_operations_per_cycle": scalar_ops_per_cycle,
                 "peak_ops_per_second": dict(arch["peak_ops_per_second"]),
+                "resource_model_version": profile.resource_model_version,
+                "resource_limits": {
+                    resource: dict(modes)
+                    for resource, modes in profile.resource_limits.items()
+                },
+                "resource_limit_sources": dict(profile.resource_limit_sources),
+                "profile_revision": profile.profile_revision,
+                "audit_evidence": dict(profile.audit_evidence),
                 "ridge_point": ridge_point,
             },
             "workload": {
@@ -327,6 +356,13 @@ class EinsumGraphPerfModel:
                     for key, value in compute_cycles_by_precision.items()
                 },
                 "total_other_ops": int(total_other_ops),
+                "resource_model_version": (analysis.get("metadata") or {})
+                .get("resource_model", {})
+                .get("version"),
+                "resource_work": resource_work,
+                "resource_cycles": {
+                    key: int(value) for key, value in resource_cycles.items()
+                },
                 "total_flops": int(total_flops),
                 "bytes_per_element": bytes_per_element,
                 "memory_accounting": (

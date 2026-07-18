@@ -40,6 +40,8 @@ _DTYPE_BYTES = {
     "bfloat16": 2.0,
     "float8_e4m3fn": 1.0,
     "float8_e5m2": 1.0,
+    "float8_e4m3fnuz": 1.0,
+    "float8_e5m2fnuz": 1.0,
     "float4_e2m1": 0.5,
     "float4_e2m1fn_x2": 0.5,
     "int64": 8.0,
@@ -48,6 +50,14 @@ _DTYPE_BYTES = {
     "int8": 1.0,
     "bool": 1.0,
 }
+_AMD_UNSUPPORTED_QUANTIZATION = frozenset(
+    {
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float4_e2m1",
+        "float4_e2m1fn_x2",
+    }
+)
 
 
 class SolExecBenchFormatError(ValueError):
@@ -509,7 +519,7 @@ class AmdCompatibilityAuditor:
         error: BaseException | None = None,
     ) -> dict[str, Any]:
         result = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": status,
             "reason_code": reason_code,
             "stage": stage,
@@ -534,7 +544,24 @@ class AmdCompatibilityAuditor:
         self, workload: OfficialWorkload, *, execute: bool = True
     ) -> dict[str, Any]:
         """Audit one official workload without substituting unsupported work."""
-        imports = _imports(str(self.problem.definition["reference"]))
+        reference_source = str(self.problem.definition["reference"])
+        imports = _imports(reference_source)
+        declared_quant_formats = sorted(
+            dtype
+            for dtype in _AMD_UNSUPPORTED_QUANTIZATION
+            if f"torch.{dtype}" in reference_source
+        )
+        if declared_quant_formats:
+            return self._result(
+                workload,
+                "incompatible",
+                "unsupported_quantization_format",
+                stage="reference_semantics",
+                evidence={
+                    "dtypes": declared_quant_formats,
+                    "policy": "AMD formats are not substituted for NVIDIA formats",
+                },
+            )
         cycles = sorted(imports & _FORBIDDEN_CYCLE_IMPORTS)
         if cycles:
             return self._result(
@@ -604,6 +631,18 @@ class AmdCompatibilityAuditor:
                 for name, spec in self.problem.definition[side].items():
                     dtype = str(spec["dtype"])
                     dtypes.add(dtype)
+                    if dtype in _AMD_UNSUPPORTED_QUANTIZATION:
+                        return self._result(
+                            workload,
+                            "incompatible",
+                            "unsupported_quantization_format",
+                            stage="static_dtype",
+                            evidence={
+                                "dtype": dtype,
+                                "tensor": name,
+                                "policy": "AMD formats are not substituted for NVIDIA formats",
+                            },
+                        )
                     if dtype not in _DTYPE_BYTES:
                         return self._result(
                             workload,
@@ -726,10 +765,16 @@ class AmdCompatibilityAuditor:
                 free, total = torch.cuda.mem_get_info()
                 return self._result(
                     workload,
-                    "execution_failed",
+                    "incompatible",
                     "runtime_oom",
                     stage="input_generation",
-                    evidence={"free_bytes": free, "total_bytes": total},
+                    evidence={
+                        "free_bytes": free,
+                        "total_bytes": total,
+                        "minimum_storage_bytes": int(storage),
+                        "tensors": tensors,
+                        "selected_device": selected_device,
+                    },
                     error=exc,
                 )
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -782,10 +827,16 @@ class AmdCompatibilityAuditor:
                 free, total = torch.cuda.mem_get_info()
                 return self._result(
                     workload,
-                    "execution_failed",
+                    "incompatible",
                     "runtime_oom",
                     stage="reference_execution",
-                    evidence={"free_bytes": free, "total_bytes": total},
+                    evidence={
+                        "free_bytes": free,
+                        "total_bytes": total,
+                        "minimum_storage_bytes": int(storage),
+                        "tensors": tensors,
+                        "selected_device": selected_device,
+                    },
                     error=exc,
                 )
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -944,7 +995,19 @@ def _validate_input(name, value, tensor_spec, shape, device):
         "            value = _torch.randint(-8, 8, shape, dtype=dtype, device=device)\n"
         "        values.append(value.item() if _SHAPES[uuid][name] is None else value)\n",
     )
-    return str(problem.definition["reference"]).rstrip() + "\n" + prelude
+    prelude = prelude.replace(
+        "globals()[_CUSTOM_ENTRYPOINT](", "_SOLAR_CUSTOM_INPUT_FACTORY("
+    )
+    custom_binding = (
+        "_SOLAR_CUSTOM_INPUT_FACTORY = globals().get("
+        f"{custom!r}) if {custom!r} else None\n"
+    )
+    return (
+        str(problem.definition["reference"]).rstrip()
+        + "\n\n"
+        + custom_binding
+        + prelude
+    )
 
 
 __all__ = [

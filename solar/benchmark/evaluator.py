@@ -53,6 +53,7 @@ class WorkloadEvaluation:
     analysis_sha256: str | None = None
     source_graph_sha256: str | None = None
     verification_sha256: str | None = None
+    bound_audit: dict[str, Any] | None = None
     failure: str | None = None
 
 
@@ -691,7 +692,32 @@ class RocmEvaluator:
             item.candidate_latency_ms = stats.p50_ms
             if baseline is not None:
                 item.baseline_latency_ms = baseline.workloads.get(workload.name)
-            if baseline_error:
+            if (
+                policy.publishable
+                and clocks_locked
+                and theoretical_ms > 0
+                and stats.p50_ms < theoretical_ms
+            ):
+                architecture_identity = self.architecture.to_dict()
+                architecture_identity.pop("source", None)
+                item.status = "bound_violation"
+                item.sol_score = None
+                item.bound_audit = {
+                    "observed_p50_ms": stats.p50_ms,
+                    "theoretical_solar_ms": theoretical_ms,
+                    "observed_to_theoretical_ratio": stats.p50_ms / theoretical_ms,
+                    "analysis_sha256": analysis.sha256,
+                    "source_graph_sha256": analysis.source_graph_sha256,
+                    "architecture_hash": canonical_hash(architecture_identity),
+                    "clocks_locked": clocks_locked,
+                    "timing_profile": policy.name,
+                    "timing": stats.to_dict(),
+                }
+                item.failure = (
+                    "correct measured kernel is faster than formal TSOL; "
+                    "score withheld pending resource/profile audit"
+                )
+            elif baseline_error:
                 item.failure = baseline_error
                 item.status = "invalid_baseline"
             elif baseline is not None and item.baseline_latency_ms is None:

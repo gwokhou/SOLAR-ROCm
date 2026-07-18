@@ -53,3 +53,9 @@ those absent tools are not presented as maintained functionality.
 Executable correctness and timing depend on the submitted solution backend.
 Publishing a theoretical FP8/INT8/INT4 roofline does not by itself guarantee
 that an arbitrary PyTorch operator implements that dtype on every ROCm target.
+
+The pinned official representative corpus deliberately retains one NVIDIA
+E4M3FN FP8 problem and one NVFP4 problem as incompatible RX 9060 XT cases. Its
+audit records `unsupported_quantization_format` and `fallbacks_used: []`.
+Substituting FNUZ, INT4, FP16/BF16, smaller shapes, or CPU execution would audit
+a different workload and is therefore forbidden.

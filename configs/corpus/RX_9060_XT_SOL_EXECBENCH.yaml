@@ -1,0 +1,193 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+source:
+  dataset_id: nvidia/SOL-ExecBench
+  revision: 63699402f003496acc3af4eb534a5304a8ac1ea9
+  schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+  parquet_sha256:
+    FlashInfer-Bench: 89d1feacf02b6f8c07ec8d67a9dbb2c531652251095a7f762f2bc296f6a1fe74
+    L1: dbaf8476812194920e405118cc5f4abc65035b79a4307b5ee88fb07666ceed48
+    L2: 4a55a4bfbe9a6f9b2ad4c5c5c680977e66926175643739530bf5a8ca3e87cd54
+    Quant: aa30e9a66ac2292499eacb1cc73ad789ddc7c5f5808ddb10d9dc211e94560036
+entries:
+  - slot: attention_backward_fp32
+    config: L1
+    problem: 066_masked_softmax_with_attention_dropout_backward
+    workload_uuid: ff15d496-108e-5529-bd40-3f27afe7cf19
+    official_row_sha256: d9c59088d644ea2ea5cefbfb07b24a02f3e616a14a31f4438d8f443d8a6d0474
+    official_workload_sha256: 87eb31f9d9908c67a00cf94bd636625741704d18e1db9e2432c1319c6efbdfce
+    operation: attention
+    dtype: fp32
+    pass: backward
+    dynamic_path: static_instance
+    input_kind: random_scalar
+    golden:
+      external_bytes: 6946816
+      flops: 0
+      resource_work:
+        conversion: {bool->fp32: 524288}
+        reduction: {fp32: 522240}
+        valu: {bool: 131072, fp32: 3145728}
+      derivation: "For N=2*4*256*256 and G=2*4*256: conversion=N, reduction=N-G, FP32 VALU=6*N; mask inversion visits 2*1*256*256 booleans."
+  - slot: norm_forward_bf16
+    config: L1
+    problem: 069_rms_norm
+    workload_uuid: b6b63196-7f11-5b0d-969e-33e44f70975f
+    official_row_sha256: f62fdd64b7c01ef53c9184a3f9e1faee0dbf89cbbe33acc2bbd64a18cd9ea346
+    official_workload_sha256: 387473a4c90d0b399dc0afcbd54bfdf9050648a6c81a236102fcfe9c626c5220
+    operation: norm
+    dtype: bf16
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: random_scalar
+    golden:
+      external_bytes: 6455296
+      flops: 0
+      resource_work:
+        reduction: {bf16: 1073021}
+        sfu: {bf16: 1073283}
+        valu: {bf16: 3219718}
+      derivation: "For N=1*131*8192 and G=1*131 groups: reduction=N-G, SFU=N+G, VALU=3*N+2*G; bytes are the definition tensor widths only."
+  - slot: norm_backward_bf16
+    config: L1
+    problem: 013_fused_residual_rms_norm_backward
+    workload_uuid: cf9bd8ed-f80a-54eb-9fc2-9f3d5970f8c1
+    official_row_sha256: 7c181166c5ea8b4c8041ea24815437cf31f208e22304373e0bcdcacbceda5179
+    official_workload_sha256: 31dce140dc2926a7cbafcfdf451cf0928f535458f27a87c253a091b2e118a043
+    operation: norm
+    dtype: bf16
+    pass: backward
+    dynamic_path: static_instance
+    input_kind: random
+    golden:
+      external_bytes: 3297792
+      flops: 0
+      resource_work:
+        conversion: {bf16->fp32: 327680, fp32->bf16: 327680}
+        reduction: {fp32: 652672}
+        valu: {fp32: 1966208}
+      derivation: "For N=1*128*2560, G=128 and H=2560: conversions=N each, reductions=(N-H)+(N-G), VALU=6*N+G; unused official input x is not accessed or counted."
+  - slot: ssm_backward_bf16
+    config: L1
+    problem: 056_mamba_ssm_dt_projection_softplus_clamp_backward
+    workload_uuid: a2e57e4a-476a-5b71-a8f5-e6726ddba86b
+    official_row_sha256: 220caffe752bb481fde19ffcab9e3e46fff874c713ed004cd4ed7c7b49fd6cf5
+    official_workload_sha256: f27d89dd29169bbdce6a76ae1476dd9903754031aadb5b8d4709d3b18e8ee899
+    operation: ssm
+    dtype: bf16
+    pass: backward
+    dynamic_path: static_instance
+    input_kind: random_scalar
+    golden:
+      external_bytes: 42000
+      flops: 0
+      resource_work:
+        conversion: {bf16->fp32: 15720, bool->fp32: 5240, fp32->bf16: 5280}
+        reduction: {fp32: 5200}
+        sfu: {fp32: 5240}
+        valu: {bool: 5240, fp32: 31440}
+      derivation: "For N=1*131*40 and H=40: conversions=3*N,N,N+H; reduction=N-H; SFU=N; FP32 VALU=6*N and boolean VALU=N."
+  - slot: conv_forward_fp32
+    config: L1
+    problem: 040_conv2d_residual_block
+    workload_uuid: ca8527b4-8811-5614-9515-e5ba498f168d
+    official_row_sha256: d3d8f76252a7c6105a3e57f189277d894f8a4f8f5427f4f5dcd8cb0886e528d4
+    official_workload_sha256: 4c9ddaedcb455970dcd4b88ac41dbed253022171cb7539e810b186e4c90a9cee
+    operation: conv
+    dtype: fp32
+    pass: forward
+    dynamic_path: dynamic_shape_small
+    input_kind: random
+    golden:
+      external_bytes: 105356
+      flops: 14155776
+      resource_work:
+        mfma: {fp32->fp32: 14155776}
+        valu: {fp32: 12288}
+      derivation: "MFMA=2*B*H*W*K*K*(3*32+32*3) and VALU=B*3*H*W for residual add; bytes are explicit definition tensors."
+  - slot: conv_forward_dynamic_next_fp32
+    config: L1
+    problem: 040_conv2d_residual_block
+    workload_uuid: 426a537c-9a07-578e-bf40-b45746f82335
+    official_row_sha256: d3d8f76252a7c6105a3e57f189277d894f8a4f8f5427f4f5dcd8cb0886e528d4
+    official_workload_sha256: b39f9ec7e43050f733b83ec5763320d6e7e5d12eaaba74140ab0190503f75453
+    operation: conv
+    dtype: fp32
+    pass: forward
+    dynamic_path: dynamic_shape_next
+    input_kind: random
+    golden:
+      external_bytes: 203660
+      flops: 28311552
+      resource_work:
+        mfma: {fp32->fp32: 28311552}
+        valu: {fp32: 24576}
+      derivation: "At B=2, MFMA=2*B*H*W*K*K*(3*32+32*3) and VALU=B*3*H*W; bytes are explicit definition tensors."
+  - slot: attention_forward_bf16
+    config: L1
+    problem: 083_attention_score_value_matmul
+    workload_uuid: 9ea9d093-cc9d-5e29-a18b-899d0f60238b
+    official_row_sha256: 9c55b40762a7f0a30f784b76b37e0f1029af6fadfd39b2a1ecec06c463190218
+    official_workload_sha256: f2bbc394a3c80410f1a3e9f87cb84804b93e3edf96f1a455093d6b9134335286
+    operation: attention
+    dtype: bf16
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: random
+    golden:
+      external_bytes: 491520
+      flops: 10485760
+      resource_work:
+        mfma: {bf16->fp32: 10485760}
+      derivation: "Single score-value contraction: 2*B*H*Q*K*D at B=1,H=20,Q=K=D=64; bytes are definition tensors."
+  - slot: moe_forward_bf16
+    config: L1
+    problem: 008_expert_output_weighted_index_add_accumulation
+    workload_uuid: 0bda2a65-30fb-51ee-a53d-4506adc7bf9c
+    official_row_sha256: e670b948e7a76d452b1d3915beba104851d70e556ae9a0eeb023713fc1b52c0d
+    official_workload_sha256: f47a0416da4bac6a23a1927611bf7c807bd5608917c1e4af9cfec1a9c520ab2e
+    operation: moe
+    dtype: bf16
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: custom
+    golden:
+      external_bytes: 8057024
+      flops: 0
+      resource_work:
+        atomic: {bf16: 3219456}
+      derivation: "At B=1,S=131,H=3072,K=8: bytes=2*(B*S*H*2)+(B*S*K*H*2)+(B*S*K*8); atomic work is derived independently from B*S*K*H updates."
+  - slot: fp8_block_scale
+    config: Quant
+    problem: 001_fp8_attention_output_projection
+    workload_uuid: 907370b8-2db6-5fde-aa89-a00ee3e73c1a
+    official_row_sha256: 9f792015a94bce783366dcaa5030799f12dfce6df41694da0f51a25d44609b7f
+    official_workload_sha256: 4991f6e1240eb2e3234b21be040529c2e06bed667138026dd1154a0bad3b91fc
+    operation: attention
+    dtype: fp8
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: random
+    golden:
+      external_bytes: 125844480
+      flops: 30198988800
+      resource_work: {}
+      derivation: "2*M*K*N projection FLOPs; official reference declares E4M3FN block scaling."
+  - slot: nvfp4_projection
+    config: Quant
+    problem: 024_nvfp4_attention_output_projection
+    workload_uuid: 2c3eef24-5c2e-5a61-b7f1-237d5adf1972
+    official_row_sha256: 0a18cb4d3a7e16cfc0cec87537d3e3be9bd36836e163c247f099b2d5830804f6
+    official_workload_sha256: 8b0ce3cc2a73601c0e78a5e47b0707f9d25f5d06aa58c89ab8a14ef698522ec6
+    operation: attention
+    dtype: nvfp4
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: custom
+    golden:
+      external_bytes: 7143428
+      flops: 2818572288
+      resource_work: {}
+      derivation: "2*(B*L)*K*M projection FLOPs; official NVFP4 widths determine storage."

@@ -1,0 +1,739 @@
+schema_version: 1
+source:
+  dataset_id: nvidia/SOL-ExecBench
+  revision: 63699402f003496acc3af4eb534a5304a8ac1ea9
+  manifest: configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml
+  manifest_sha256: bc9ec1b5316dee870d1609158897a37fb7b96588f37ad7d6b5c61a97bc8532a9
+results:
+  attention_backward_fp32:
+    identity:
+      config: L1
+      problem: 066_masked_softmax_with_attention_dropout_backward
+      workload_uuid: ff15d496-108e-5529-bd40-3f27afe7cf19
+    compatibility:
+      definition_sha256: 5685b055434a87dbe89eaa109745c299baf28ba70773db28029d03680a3c63c8
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bool
+        - float32
+        external_inputs: {}
+        minimum_storage_bytes: 6946820
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 066_masked_softmax_with_attention_dropout_backward
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 667cf4b044f3d3271d91877abbf5f4eab5be8a802c1db5ff40fdb26ef9b67fd5
+      workload_uuid: ff15d496-108e-5529-bd40-3f27afe7cf19
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: e5a0f070d781d99e9400c665b2708c014c73d34cf9c6178e308d8a26d29615dc
+    verification_sha256: 4969d59405d0332f48ad96534555dc00845b608fe8b752b36e6b4da5941290bd
+  norm_forward_bf16:
+    identity:
+      config: L1
+      problem: 069_rms_norm
+      workload_uuid: b6b63196-7f11-5b0d-969e-33e44f70975f
+    compatibility:
+      definition_sha256: 90556739bc852ad9035c3b0fb1d0167ebe4666d0048f537279663ab5e3de3749
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        - float32
+        external_inputs: {}
+        minimum_storage_bytes: 6455300
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 069_rms_norm
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 9eab68a06ddba814835ea202e6f4fd5c7e8141fc1b305f3c365d0e35da9bcf6a
+      workload_uuid: b6b63196-7f11-5b0d-969e-33e44f70975f
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: bbd478664580c41ace9ab346f5f4333feae6357ac0ff0643fd101a8b37679d28
+    verification_sha256: 8449106f382d00d36faf458640d5bb7a2a1b1104efe5c786d7921ce77786c990
+  norm_backward_bf16:
+    identity:
+      config: L1
+      problem: 013_fused_residual_rms_norm_backward
+      workload_uuid: cf9bd8ed-f80a-54eb-9fc2-9f3d5970f8c1
+    compatibility:
+      definition_sha256: a5d88e8cbb334e3dd4460b84ff96987688062068170dd6d647d6a66928fed880
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        - float32
+        external_inputs: {}
+        minimum_storage_bytes: 4608512
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 013_fused_residual_rms_norm_backward
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: c9312217461c0371209ea4160ddd9bcde347313d8e335227e1323acf00abe081
+      workload_uuid: cf9bd8ed-f80a-54eb-9fc2-9f3d5970f8c1
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 90eead39c5024bd630a835bf48ad63b31c315509018e8f7718a052cd547decec
+    verification_sha256: dea9dcd95321dc3ea09905597c80c5f01c621668f97ac2501a8f15f1ef17ec4a
+  ssm_backward_bf16:
+    identity:
+      config: L1
+      problem: 056_mamba_ssm_dt_projection_softplus_clamp_backward
+      workload_uuid: a2e57e4a-476a-5b71-a8f5-e6726ddba86b
+    compatibility:
+      definition_sha256: cd0f35ff8fea87e8312c0e708d76966dec2ab72f86a06e0a3f4ce9be597c792e
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        - float32
+        external_inputs: {}
+        minimum_storage_bytes: 42008
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 056_mamba_ssm_dt_projection_softplus_clamp_backward
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 120b6325a8902b26c975166b0e826d9fc1a57b6508f48b493aa639cedbe7ce54
+      workload_uuid: a2e57e4a-476a-5b71-a8f5-e6726ddba86b
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: e9a8a90d8438f3678071a6bb86ac220f605c8b5338987e9f5d322a9a0f73e874
+    verification_sha256: b5744b11c036cc1c3937ab37493503b60aa6dd0fd4d6577981c9224cbd24ad6e
+  conv_forward_fp32:
+    identity:
+      config: L1
+      problem: 040_conv2d_residual_block
+      workload_uuid: ca8527b4-8811-5614-9515-e5ba498f168d
+    compatibility:
+      definition_sha256: 4400a12a779f3f2f12c9833bab27b144b22c435d739718a1dedad0f7a16ff88c
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float32
+        external_inputs: {}
+        minimum_storage_bytes: 105356
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 040_conv2d_residual_block
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 43921c0c9c1b591f14eb22fe90c24b7cbda8927ed01f264cb8deafe79d00ded1
+      workload_uuid: ca8527b4-8811-5614-9515-e5ba498f168d
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 2448d59cfd6543a1631d5f49fb385f37951f14e4d2854ab0b1f96a32fa3d6789
+    verification_sha256: 166d5082e2b19fe81f0c959e2431e9292ac33ec93cc7b37a6f06f03f7cc6e0ac
+  conv_forward_dynamic_next_fp32:
+    identity:
+      config: L1
+      problem: 040_conv2d_residual_block
+      workload_uuid: 426a537c-9a07-578e-bf40-b45746f82335
+    compatibility:
+      definition_sha256: 4400a12a779f3f2f12c9833bab27b144b22c435d739718a1dedad0f7a16ff88c
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float32
+        external_inputs: {}
+        minimum_storage_bytes: 203660
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 040_conv2d_residual_block
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 43921c0c9c1b591f14eb22fe90c24b7cbda8927ed01f264cb8deafe79d00ded1
+      workload_uuid: 426a537c-9a07-578e-bf40-b45746f82335
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 26ae215855f3cf03ef9f5db86620a486a09127a967bb6e5c17f9cfb148fe9b9f
+    verification_sha256: 24292ca12bfa317331ad55638fc3074ed8ca8976c207addcbdf2784281d7817a
+  attention_forward_bf16:
+    identity:
+      config: L1
+      problem: 083_attention_score_value_matmul
+      workload_uuid: 9ea9d093-cc9d-5e29-a18b-899d0f60238b
+    compatibility:
+      definition_sha256: ae2a8fe95a5c9f4ffc1dc7b6e728ac9490fdd87ec6c54b765eabdccba9b033d5
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        external_inputs: {}
+        minimum_storage_bytes: 491520
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 083_attention_score_value_matmul
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 6ac6769070632a68db32124645ebff4726dbd603f2b3e4679b27ac9f06a8459d
+      workload_uuid: 9ea9d093-cc9d-5e29-a18b-899d0f60238b
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 09e708acb70c892d43f02073b6c2109d80a9951355d567e27c2e415f9bbfcd25
+    verification_sha256: 525ec19d852d9431f332510e25275d937904a4fbbcea58f1c7c17b8dfa8edb2d
+  moe_forward_bf16:
+    identity:
+      config: L1
+      problem: 008_expert_output_weighted_index_add_accumulation
+      workload_uuid: 0bda2a65-30fb-51ee-a53d-4506adc7bf9c
+    compatibility:
+      definition_sha256: feed015a14b20b66c487a29d5643cd310e5cf7aa6594350f96bee74475d354e4
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        - int64
+        external_inputs: {}
+        minimum_storage_bytes: 8057024
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 008_expert_output_weighted_index_add_accumulation
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: a5e0880a4cb19b63b6421cc22b82ea240dffcd9c1c29325c200226335c741512
+      workload_uuid: 0bda2a65-30fb-51ee-a53d-4506adc7bf9c
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 3c530bc16b9635c5f5bb1bcf69538a0c1154752b4b99ca29a6aea6c7c65a6b17
+    verification_sha256: fa4f6df531eb1ed76cb46fd53d7d8d3bffa798fc49b537d96bdc7075b84c7955
+  fp8_block_scale:
+    identity:
+      config: Quant
+      problem: 001_fp8_attention_output_projection
+      workload_uuid: 907370b8-2db6-5fde-aa89-a00ee3e73c1a
+    compatibility:
+      definition_sha256: 11e421ba381a56ff284a39df1317d7d491d0b9d80b188db3e558e9007ee56503
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float8_e4m3fn
+        policy: AMD formats are not substituted for NVIDIA formats
+      fallbacks_used: []
+      problem: 001_fp8_attention_output_projection
+      reason_code: unsupported_quantization_format
+      schema_version: 2
+      stage: reference_semantics
+      status: incompatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 18bc5e667f0aba7cdf66b68ea3b9e1946f0d2c4e43cac11288ec09a936f9729f
+      workload_uuid: 907370b8-2db6-5fde-aa89-a00ee3e73c1a
+    formal_attested: false
+    formal_reason: benchmark_missing
+  nvfp4_projection:
+    identity:
+      config: Quant
+      problem: 024_nvfp4_attention_output_projection
+      workload_uuid: 2c3eef24-5c2e-5a61-b7f1-237d5adf1972
+    compatibility:
+      definition_sha256: 743f290346f30ccb402d943a2652607b52835c39df0469e512f10ebadbae5760
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float4_e2m1
+        - float4_e2m1fn_x2
+        - float8_e4m3fn
+        policy: AMD formats are not substituted for NVIDIA formats
+      fallbacks_used: []
+      problem: 024_nvfp4_attention_output_projection
+      reason_code: unsupported_quantization_format
+      schema_version: 2
+      stage: reference_semantics
+      status: incompatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: b67268217dce0051a0e1535f8959d00253dfb07783df2ff76e3e3319845df3ba
+      workload_uuid: 2c3eef24-5c2e-5a61-b7f1-237d5adf1972
+    formal_attested: false
+    formal_reason: benchmark_missing
+coverage:
+  denominator: 10
+  selection:
+    operation:
+      attention: 4
+      norm: 2
+      ssm: 1
+      conv: 2
+      moe: 1
+    dtype:
+      fp32: 3
+      bf16: 5
+      fp8: 1
+      nvfp4: 1
+    pass_kind:
+      backward: 3
+      forward: 7
+    dynamic_path:
+      static_instance: 8
+      dynamic_shape_small: 1
+      dynamic_shape_next: 1
+    input_kind:
+      random_scalar: 3
+      random: 5
+      custom: 2
+  formal_attested:
+    operation:
+      attention: 2
+      norm: 2
+      ssm: 1
+      conv: 2
+      moe: 1
+    dtype:
+      fp32: 3
+      bf16: 5
+      fp8: 0
+      nvfp4: 0
+    pass_kind:
+      backward: 3
+      forward: 5
+    dynamic_path:
+      static_instance: 6
+      dynamic_shape_small: 1
+      dynamic_shape_next: 1
+    input_kind:
+      random_scalar: 3
+      random: 4
+      custom: 1
+  formal_attested_count: 8
+gate:
+  terminal_evidence_complete: true
+  all_compatible_formally_attested: true
+  passed: true

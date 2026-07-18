@@ -3,7 +3,11 @@
 
 """ROCm kernel evaluation, calibration, and SOL scoring."""
 
-from solar.benchmark.calibration import CalibrationArtifact, RocmCalibrator
+from solar.benchmark.calibration import (
+    CalibrationArtifact,
+    ResourceProbe,
+    RocmCalibrator,
+)
 from solar.benchmark.evaluator import EvaluationReport, RocmEvaluator
 from solar.benchmark.models import (
     AnalysisArtifact,
@@ -19,6 +23,7 @@ __all__ = [
     "BenchmarkSpec",
     "CompatibilityArtifact",
     "CalibrationArtifact",
+    "ResourceProbe",
     "EvaluationReport",
     "RocmCalibrator",
     "RocmEvaluator",

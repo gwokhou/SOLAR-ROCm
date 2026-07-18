@@ -120,6 +120,9 @@ _BINARY_ELEMENTWISE_OPS = frozenset(
         "__rsub__",
         "__rmul__",
         "__rtruediv__",
+        "__and__",
+        "bitwise_and",
+        "masked_fill",
     }
 )
 
@@ -150,6 +153,8 @@ _UNARY_ELEMENTWISE_OPS = frozenset(
         "relu_",
         "dropout",
         "dropout_",
+        "bitwise_not",
+        "__invert__",
     }
 )
 
@@ -213,6 +218,7 @@ _SHAPE_OPS = frozenset(
         "unsqueeze",
         "expand",
         "repeat",
+        "repeat_interleave",
         "transpose",
         "permute",
         "t",
@@ -230,6 +236,8 @@ _SHAPE_OPS = frozenset(
 )
 
 _MATRIX_OPS = frozenset({"diag", "diagonal", "tril", "triu"})
+
+_CUMULATIVE_OPS = frozenset({"cummax", "cummin", "cumprod", "cumsum"})
 
 _EMBEDDING_OPS = frozenset({"embedding"})
 
@@ -251,6 +259,11 @@ _TRIVIAL_OPS = frozenset(
         "pad",
         "unfold",
         "fold",
+        "index_add",
+        "index_copy",
+        "index_put",
+        "scatter",
+        "scatter_add",
     }
 )
 
@@ -271,6 +284,7 @@ _ALL_SUPPORTABLE_OPS = (
     | _POOLING_OPS
     | _SHAPE_OPS
     | _MATRIX_OPS
+    | _CUMULATIVE_OPS
     | _EMBEDDING_OPS
     | _RNN_OPS
     | _TRIVIAL_OPS
@@ -558,6 +572,7 @@ class PyTorchToEinsum:
         "unsqueeze",
         "expand",
         "repeat",
+        "repeat_interleave",
         "transpose",
         "permute",
         "t",
@@ -611,7 +626,16 @@ class PyTorchToEinsum:
         "embedding": 1,
         "embedding_bag": 1,
         "gather": 0,
+        "index_add": 0,
+        "index_add_": 0,
+        "index_copy": 0,
+        "index_copy_": 0,
+        "index_put": 0,
+        "index_put_": 0,
         "scatter": 0,
+        "scatter_": 0,
+        "scatter_add": 0,
+        "scatter_add_": 0,
         "where": 1,
     }
     _PARAMETER_TENSOR_INDICES: "dict[str, set[int]]" = {
@@ -856,7 +880,24 @@ class PyTorchToEinsum:
                 input_shapes.append(list(shape))
                 input_dtypes.append(raw_dtypes[index])
                 input_types.append("weight" if index in parameter_indices else "input")
-                input_connections.append(f"{op_id}.auxiliary-tensor_{index}")
+                synthetic_id = f"{op_id}.auxiliary-tensor_{index}"
+                input_connections.append(synthetic_id)
+                if index not in parameter_indices and synthetic_id not in layers:
+                    layers[synthetic_id] = {
+                        "type": "auxiliary-tensor",
+                        "node_class": "TensorNode",
+                        "input_shapes": [],
+                        "output_shapes": [list(shape)],
+                        "input_dtypes": [],
+                        "output_dtypes": [raw_dtypes[index]],
+                        "input_types": [],
+                        "output_types": ["output"],
+                        "module_args": {
+                            "hierarchical_name": synthetic_id,
+                            "recovered_from": "exact_call_signature",
+                        },
+                        "connections": {"inputs": [], "outputs": [op_id]},
+                    }
             if raw_dtypes and len(raw_dtypes) == len(input_shapes):
                 odata["input_dtypes"] = list(raw_dtypes)
 
@@ -907,7 +948,56 @@ class PyTorchToEinsum:
             if in_dtypes:
                 odata["input_dtypes"] = in_dtypes
             layer_type = (odata.get("type") or "").lower()
-            if (
+            dtype_methods = {
+                "bfloat16": "torch.bfloat16",
+                "float": "torch.float32",
+                "half": "torch.float16",
+                "int": "torch.int32",
+                "long": "torch.int64",
+            }
+            if layer_type in dtype_methods:
+                widest = dtype_methods[layer_type]
+            elif layer_type in {
+                "eq",
+                "ne",
+                "lt",
+                "le",
+                "gt",
+                "ge",
+                "__eq__",
+                "__ne__",
+                "__lt__",
+                "__le__",
+                "__gt__",
+                "__ge__",
+            }:
+                widest = "torch.bool"
+            elif layer_type in {"bitwise_and", "__and__"}:
+                widest = (
+                    in_dtypes[0]
+                    if in_dtypes
+                    else (odata.get("output_dtypes") or ["torch.bool"])[0]
+                )
+            elif layer_type == "to":
+                requested_dtype = next(
+                    (
+                        argument["dtype"]
+                        for argument in (
+                            (odata.get("module_args") or {}).get("call_arguments") or []
+                        )
+                        if isinstance(argument, dict) and "dtype" in argument
+                    ),
+                    None,
+                )
+                if requested_dtype is None:
+                    widest = (
+                        in_dtypes[0]
+                        if in_dtypes
+                        else (odata.get("output_dtypes") or ["torch.float32"])[0]
+                    )
+                else:
+                    widest = f"torch.{str(requested_dtype).removeprefix('torch.')}"
+            elif (
                 layer_type in self._OUTPUT_DTYPE_INPUT_INDEX
                 and len(in_dtypes) > self._OUTPUT_DTYPE_INPUT_INDEX[layer_type]
             ):
@@ -1085,7 +1175,33 @@ class PyTorchToEinsum:
         # mint mutated ``dims`` in-place without persisting back into
         # ``ops["Output"]`` (causing the "rank-size collision / Rk reuse"
         # failures on DenseNet/Mamba2/RNN/LSTM/GRU/etc.).
-        af_graph = build_af_graph_from_dict(einsum_graph)
+        try:
+            af_graph = build_af_graph_from_dict(einsum_graph)
+        except (RuntimeError, ValueError) as exc:
+            if not self._strict:
+                raise
+            # AccelForge's legacy cost IR cannot encode every executable
+            # schema-v3 operation (notably gather/scatter and multi-output
+            # primitives).  The exact semantic graph has already passed the
+            # strict validator above, so retain it and record that the
+            # secondary AF projection is unavailable instead of inventing a
+            # copy/einsum surrogate.
+            einsum_graph["af_emission"] = {
+                "status": "not_applicable",
+                "reason": "extended_semantics_not_representable",
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            }
+            with open(out_path, "w") as f:
+                yaml.dump(
+                    einsum_graph,
+                    f,
+                    Dumper=NoAliasDumper,
+                    sort_keys=False,
+                    default_flow_style=False,
+                )
+            shutil.copy2(out_path, renamed_path)
+            return einsum_graph
         # Strip internal diagnostics before serializing — AF rejects unknown
         # top-level fields.
         af_to_write = {k: v for k, v in af_graph.items() if not k.startswith("_")}
@@ -1215,6 +1331,11 @@ class PyTorchToEinsum:
         # output dtypes. After this call, ``layers`` is the cleaned source
         # of truth for downstream graph construction and handlers.
         self._repair_torchview_quirks(layers, op_ids, tensor_ids)
+        # The repair pass may materialize producerless tensor-valued keyword
+        # arguments that torchview recorded only in ``raw_attributes``.  They
+        # are real external inputs, so refresh the partitions before emitting
+        # start nodes instead of leaving phantom tensor names in the graph.
+        tensor_ids, op_ids, auxiliary_ids, parameter_ids = self._partition_nodes(layers)
 
         graph = nx.DiGraph()
         for op_id in op_ids:
@@ -1314,6 +1435,9 @@ class PyTorchToEinsum:
                     "output_shapes": output_shapes,
                     "output_dtypes": output_dtypes,
                     "consumers": valid_consumers,
+                    "recovered_from": (aux_data.get("module_args") or {}).get(
+                        "recovered_from"
+                    ),
                 }
             )
 
@@ -3408,6 +3532,12 @@ class PyTorchToEinsum:
 
             layer_dict: Dict[str, Any] = {
                 "type": "start",
+                "source_tensor_id": original_id,
+                "source_binding": (
+                    "recovered_keyword_tensor"
+                    if info.get("recovered_from") == "exact_call_signature"
+                    else "torchview_input_order"
+                ),
                 "einsum_equation": equation,
                 "elementwise_op": "copy",
                 "reduction_op": "none",

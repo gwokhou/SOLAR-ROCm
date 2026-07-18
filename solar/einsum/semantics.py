@@ -20,6 +20,8 @@ class SemanticGraphError(ValueError):
 
 SUPPORTED_ATEN_TARGETS = frozenset(
     {
+        "__and__",
+        "__invert__",
         "abs",
         "add",
         "addmm",
@@ -28,6 +30,8 @@ SUPPORTED_ATEN_TARGETS = frozenset(
         "argmax",
         "argmin",
         "batch_norm",
+        "bitwise_and",
+        "bitwise_not",
         "cat",
         "chunk",
         "clamp",
@@ -41,6 +45,7 @@ SUPPORTED_ATEN_TARGETS = frozenset(
         "conv_transpose2d",
         "conv_transpose3d",
         "cos",
+        "cumsum",
         "dequantize",
         "detach",
         "div",
@@ -51,21 +56,30 @@ SUPPORTED_ATEN_TARGETS = frozenset(
         "expand",
         "fake_quantize_per_channel_affine",
         "fake_quantize_per_tensor_affine",
+        "float",
         "flatten",
         "gather",
         "gelu",
         "group_norm",
+        "getitem",
         "hardsigmoid",
         "hardswish",
+        "half",
         "identity",
+        "index_add",
+        "index_copy",
+        "index_put",
         "index_select",
+        "int",
         "layer_norm",
         "linear",
         "log",
         "log_softmax",
         "logsumexp",
+        "long",
         "maximum",
         "matmul",
+        "masked_fill",
         "mean",
         "minimum",
         "mish",
@@ -82,10 +96,12 @@ SUPPORTED_ATEN_TARGETS = frozenset(
         "quantize_per_tensor",
         "relu",
         "repeat",
+        "repeat_interleave",
         "reshape",
         "rsqrt",
         "scaled_dot_product_attention",
         "scatter",
+        "scatter_add",
         "select",
         "sigmoid",
         "silu",
@@ -111,10 +127,13 @@ SUPPORTED_ATEN_TARGETS = frozenset(
 )
 
 _MUTATING_TARGETS = frozenset({"copy", "setitem"})
-_ATOMIC_TARGETS = frozenset({"scatter", "index_copy", "index_put"})
+_ATOMIC_TARGETS = frozenset(
+    {"index_add", "index_copy", "index_put", "scatter", "scatter_add"}
+)
 _LIBRARY_TARGETS = frozenset(
     {
         "batch_norm",
+        "bfloat16",
         "conv1d",
         "conv2d",
         "conv3d",
@@ -139,6 +158,7 @@ _ALIASING_TARGETS = frozenset(
         "detach",
         "expand",
         "flatten",
+        "getitem",
         "narrow",
         "permute",
         "reshape",
@@ -170,13 +190,19 @@ def _canonical_target(layer: Mapping[str, Any]) -> str:
     target = str(layer.get("type", "")).lower().rsplit(".", maxsplit=1)[-1]
     aliases = {
         "attention": "scaled_dot_product_attention",
+        "__and__": "bitwise_and",
+        "__radd__": "add",
+        "__rmul__": "mul",
+        "__rpow__": "pow",
+        "__rsub__": "sub",
+        "__rtruediv__": "div",
+        "__invert__": "bitwise_not",
         "sdpa": "scaled_dot_product_attention",
         "concat": "cat",
         "convtranspose1d": "conv_transpose1d",
         "convtranspose2d": "conv_transpose2d",
         "convtranspose3d": "conv_transpose3d",
-        "getitem": "slice",
-        "__getitem__": "slice",
+        "__getitem__": "getitem",
         "max": "amax",
         "min": "amin",
         "t": "transpose",
@@ -224,6 +250,11 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
         }
 
     target = _canonical_target(layer)
+    raw_target = str(layer.get("type", "")).lower().rsplit(".", maxsplit=1)[-1]
+    if raw_target in {"__radd__", "__rmul__", "__rpow__", "__rsub__", "__rtruediv__"}:
+        if len(arguments) != 2:
+            raise SemanticGraphError(f"{raw_target} requires exactly two arguments")
+        arguments = [arguments[1], arguments[0]]
     kwargs: dict[str, Any] = (
         _plain_value(recorded_kwargs) if isinstance(recorded_kwargs, Mapping) else {}
     )
@@ -404,6 +435,7 @@ def validate_semantic_graph(graph: Mapping[str, Any]) -> None:
             "chunk": (("chunks", 2),),
             "expand": (("sizes", 2),),
             "gather": (("dim", 3),),
+            "getitem": (("item", 2),),
             "index_copy": (("dim", 4),),
             "index_select": (("dim", 3),),
             "log_softmax": (("dim", 2),),

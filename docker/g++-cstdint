@@ -1,0 +1,3 @@
+#!/bin/sh
+# Compile the pinned Timeloop source on GCC 14 without modifying its tree.
+exec /usr/bin/g++ -include cstdint "$@"

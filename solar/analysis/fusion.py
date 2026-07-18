@@ -34,7 +34,13 @@ def _tensor_bytes(shape: Sequence[int], dtype: str) -> int:
 class FusionPlanner:
     """Build maximal regions while treating unproven fusion as illegal."""
 
-    def __init__(self, graph: Mapping[str, Any]):
+    def __init__(
+        self,
+        graph: Mapping[str, Any],
+        *,
+        multi_einsum_chains: Sequence[Sequence[str]] = (),
+        verified_view_nodes: Sequence[str] = (),
+    ):
         validate_semantic_graph(graph)
         self.graph = graph
         self.layers = {
@@ -42,12 +48,26 @@ class FusionPlanner:
             for key, value in (graph.get("layers") or {}).items()
             if str(value.get("type", "")).lower() != "start"
         }
+        self.multi_einsum_edges = {
+            (str(producer), str(consumer))
+            for chain in multi_einsum_chains
+            for producer, consumer in zip(chain, chain[1:])
+        }
+        self.verified_view_nodes = {str(item) for item in verified_view_nodes}
 
-    @staticmethod
-    def _barrier(layer: Mapping[str, Any]) -> str | None:
+    def _barrier(self, layer_id: str, layer: Mapping[str, Any]) -> str | None:
         semantic = layer["semantic_op"]
         effects = semantic.get("effects") or {}
         target = str(semantic.get("target", ""))
+        if layer_id in self.verified_view_nodes:
+            if (
+                target not in {"view", "transpose", "permute", "squeeze", "unsqueeze"}
+                or effects.get("mutates")
+                or effects.get("atomic")
+                or effects.get("opaque_library_call")
+            ):
+                return "invalid_internal_view_proof"
+            return None
         if effects.get("mutates"):
             return "mutation"
         if effects.get("aliases"):
@@ -104,8 +124,9 @@ class FusionPlanner:
 
         decisions: list[dict[str, Any]] = []
         for producer, consumer in dag.edges:
-            producer_reason = self._barrier(self.layers[producer])
-            consumer_reason = self._barrier(self.layers[consumer])
+            decision_reason = "pure_dependency"
+            producer_reason = self._barrier(producer, self.layers[producer])
+            consumer_reason = self._barrier(consumer, self.layers[consumer])
             reason = producer_reason or consumer_reason
             producer_root, consumer_root = find(producer), find(consumer)
             producer_kind = str(
@@ -118,6 +139,7 @@ class FusionPlanner:
                 reason is None
                 and consumer_kind == "einsum"
                 and producer_kind != "einsum"
+                and (producer, consumer) not in self.multi_einsum_edges
             ):
                 # The single-einsum OAVES proof assumes its operands enter the
                 # tile region from the modeled backing store.  A producer
@@ -129,7 +151,10 @@ class FusionPlanner:
                 and producer_root != consumer_root
                 and contractions[producer_root] + contractions[consumer_root] > 1
             ):
-                reason = "multiple_einsums_require_multi_einsum_solver"
+                if (producer, consumer) in self.multi_einsum_edges:
+                    decision_reason = "verified_multi_einsum_chain"
+                else:
+                    reason = "multiple_einsums_require_multi_einsum_solver"
             legal = reason is None
             if legal:
                 union(producer, consumer)
@@ -138,7 +163,7 @@ class FusionPlanner:
                     "producer": producer,
                     "consumer": consumer,
                     "legal": legal,
-                    "reason": reason or "pure_dependency",
+                    "reason": reason or decision_reason,
                 }
             )
 

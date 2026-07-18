@@ -52,6 +52,7 @@ class CorpusEntry:
 
 @dataclass(frozen=True)
 class OfficialCorpusManifest:
+    schema_version: int
     path: Path
     parquet_sha256: dict[str, str]
     architecture_profile_reference: str
@@ -59,14 +60,21 @@ class OfficialCorpusManifest:
     architecture_profile_sha256: str
     architecture_hash: str
     formal_coverage_requirements: dict[str, tuple[str, ...]]
+    formal_coverage_minimums: dict[str, dict[str, int]]
+    required_combinations: tuple[dict[str, str | int], ...]
+    footprint_minimums: dict[str, int]
+    shape_pairs: dict[str, tuple[str, ...]]
+    l2_bytes: int
+    last_level_cache_bytes: int
     entries: tuple[CorpusEntry, ...]
 
     @classmethod
     def load(cls, path: str | Path) -> "OfficialCorpusManifest":
         manifest_path = Path(path).resolve()
         data = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-        if int(data.get("schema_version", 0)) != 1:
-            raise ValueError("official corpus manifest must use schema_version=1")
+        schema_version = int(data.get("schema_version", 0))
+        if schema_version not in {1, 2}:
+            raise ValueError("official corpus manifest must use schema_version 1 or 2")
         source = data.get("source") or {}
         if source.get("dataset_id") != OFFICIAL_DATASET_ID:
             raise ValueError("corpus must come from the NVIDIA official dataset")
@@ -93,20 +101,73 @@ class OfficialCorpusManifest:
         architecture_hash = canonical_hash(architecture_identity)
         axes = ("operation", "dtype", "pass_kind", "dynamic_path", "input_kind")
         raw_requirements = data.get("formal_coverage_requirements") or {}
-        if set(raw_requirements) != set(axes):
+        if schema_version == 1:
+            raw_axes = raw_requirements
+            raw_combinations: list[dict[str, Any]] = []
+            raw_footprints: dict[str, Any] = {}
+            raw_shape_pairs: list[dict[str, Any]] = []
+        else:
+            raw_axes = raw_requirements.get("axes") or {}
+            raw_combinations = raw_requirements.get("combinations") or []
+            raw_footprints = raw_requirements.get("footprint_classes") or {}
+            raw_shape_pairs = raw_requirements.get("shape_pairs") or []
+        if set(raw_axes) != set(axes):
             raise ValueError(
                 "official corpus must declare every formal coverage requirement axis"
             )
+        formal_coverage_minimums: dict[str, dict[str, int]] = {}
+        for axis in axes:
+            raw_axis = raw_axes.get(axis) or {}
+            if isinstance(raw_axis, list):
+                minimums = {str(item): 1 for item in raw_axis}
+            elif isinstance(raw_axis, dict):
+                minimums = {str(key): int(value) for key, value in raw_axis.items()}
+            else:
+                raise ValueError("formal coverage axes must be lists or mappings")
+            if not minimums or any(value <= 0 for value in minimums.values()):
+                raise ValueError("formal coverage minimums must be positive")
+            formal_coverage_minimums[axis] = minimums
         formal_coverage_requirements = {
-            axis: tuple(str(item) for item in (raw_requirements.get(axis) or []))
-            for axis in axes
+            axis: tuple(minimums) for axis, minimums in formal_coverage_minimums.items()
         }
-        if any(not values for values in formal_coverage_requirements.values()):
-            raise ValueError("formal coverage requirement axes must be non-empty")
+        required_combinations: list[dict[str, str | int]] = []
+        manifest_to_attribute = {"pass": "pass_kind", "pass_kind": "pass_kind"}
+        for raw_combination in raw_combinations:
+            if not isinstance(raw_combination, dict):
+                raise ValueError("formal coverage combinations must be mappings")
+            combination: dict[str, str | int] = {}
+            for key, value in raw_combination.items():
+                normalized = manifest_to_attribute.get(str(key), str(key))
+                if normalized == "min_count":
+                    combination[normalized] = int(value)
+                elif normalized in axes:
+                    combination[normalized] = str(value)
+                else:
+                    raise ValueError(f"unknown formal combination field: {key}")
+            combination.setdefault("min_count", 1)
+            if int(combination["min_count"]) <= 0 or len(combination) < 2:
+                raise ValueError("formal coverage combinations require positive counts")
+            required_combinations.append(combination)
+        allowed_footprints = {"fits_l2", "l2_to_llc", "exceeds_llc"}
+        footprint_minimums = {
+            str(key): int(value) for key, value in raw_footprints.items()
+        }
+        if set(footprint_minimums) - allowed_footprints or any(
+            value <= 0 for value in footprint_minimums.values()
+        ):
+            raise ValueError("invalid external-footprint coverage requirements")
+        shape_pairs: dict[str, tuple[str, ...]] = {}
+        for raw_pair in raw_shape_pairs:
+            name = str(raw_pair.get("name", ""))
+            slots = tuple(str(item) for item in raw_pair.get("slots") or [])
+            if not name or len(slots) < 2 or len(slots) != len(set(slots)):
+                raise ValueError("shape-pair requirements need a name and unique slots")
+            shape_pairs[name] = slots
         raw_entries = data.get("entries") or []
-        if not 10 <= len(raw_entries) <= 15:
+        maximum_entries = 15 if schema_version == 1 else 20
+        if not 10 <= len(raw_entries) <= maximum_entries:
             raise ValueError(
-                "official representative corpus must contain 10-15 workloads"
+                f"official representative corpus must contain 10-{maximum_entries} workloads"
             )
         entries: list[CorpusEntry] = []
         for raw in raw_entries:
@@ -142,9 +203,16 @@ class OfficialCorpusManifest:
                 )
             )
         keys = [(entry.config, entry.problem, entry.workload_uuid) for entry in entries]
-        slots = [entry.slot for entry in entries]
-        if len(keys) != len(set(keys)) or len(slots) != len(set(slots)):
+        entry_slots = [entry.slot for entry in entries]
+        if len(keys) != len(set(keys)) or len(entry_slots) != len(set(entry_slots)):
             raise ValueError("corpus slots and workload identities must be unique")
+        known_slots = set(entry_slots)
+        if any(
+            slot not in known_slots
+            for pair_slots in shape_pairs.values()
+            for slot in pair_slots
+        ):
+            raise ValueError("shape-pair coverage references an unknown corpus slot")
         required_operations = {"attention", "norm", "moe", "ssm", "conv"}
         if not required_operations.issubset({entry.operation for entry in entries}):
             raise ValueError("corpus omits a required operation family")
@@ -162,6 +230,7 @@ class OfficialCorpusManifest:
                     f"formal coverage requirements select no {axis}: {sorted(missing)}"
                 )
         return cls(
+            schema_version,
             manifest_path,
             parquet_sha256,
             str(relative_profile),
@@ -169,6 +238,12 @@ class OfficialCorpusManifest:
             architecture_profile_sha256,
             architecture_hash,
             formal_coverage_requirements,
+            formal_coverage_minimums,
+            tuple(required_combinations),
+            footprint_minimums,
+            shape_pairs,
+            int(architecture.l2_bytes),
+            int(architecture.last_level_cache_bytes),
             tuple(entries),
         )
 
@@ -258,24 +333,117 @@ class OfficialCorpusManifest:
         missing_requirements = {
             axis: [
                 value
-                for value in self.formal_coverage_requirements[axis]
-                if formal[axis].get(value, 0) == 0
+                for value, minimum in self.formal_coverage_minimums[axis].items()
+                if formal[axis].get(value, 0) < minimum
             ]
             for axis in axes
         }
-        requirements_met = not any(missing_requirements.values())
+        deficits = {
+            axis: {
+                value: minimum - formal[axis].get(value, 0)
+                for value, minimum in self.formal_coverage_minimums[axis].items()
+                if formal[axis].get(value, 0) < minimum
+            }
+            for axis in axes
+        }
+        combination_coverage: list[dict[str, Any]] = []
+        missing_combinations: list[dict[str, Any]] = []
+        for requirement in self.required_combinations:
+            minimum = int(requirement.get("min_count", 1))
+            fields = {
+                str(key): str(value)
+                for key, value in requirement.items()
+                if key != "min_count"
+            }
+            selected_count = 0
+            formal_count = 0
+            for entry in self.entries:
+                if all(
+                    str(getattr(entry, key)) == value for key, value in fields.items()
+                ):
+                    selected_count += 1
+                    if bool((results.get(entry.slot) or {}).get("formal_attested")):
+                        formal_count += 1
+            item = {
+                **fields,
+                "min_count": minimum,
+                "selection_count": selected_count,
+                "formal_attested_count": formal_count,
+            }
+            combination_coverage.append(item)
+            if formal_count < minimum:
+                missing_combinations.append(item)
+
+        footprint_selection = {
+            name: 0 for name in ("fits_l2", "l2_to_llc", "exceeds_llc")
+        }
+        footprint_formal = dict(footprint_selection)
+        for entry in self.entries:
+            if entry.golden_external_bytes <= self.l2_bytes:
+                footprint = "fits_l2"
+            elif entry.golden_external_bytes <= self.last_level_cache_bytes:
+                footprint = "l2_to_llc"
+            else:
+                footprint = "exceeds_llc"
+            footprint_selection[footprint] += 1
+            if bool((results.get(entry.slot) or {}).get("formal_attested")):
+                footprint_formal[footprint] += 1
+        missing_footprints = {
+            name: minimum - footprint_formal.get(name, 0)
+            for name, minimum in self.footprint_minimums.items()
+            if footprint_formal.get(name, 0) < minimum
+        }
+        shape_pair_coverage = {
+            name: {
+                "slots": list(slots),
+                "formal_attested": all(
+                    bool((results.get(slot) or {}).get("formal_attested"))
+                    for slot in slots
+                ),
+            }
+            for name, slots in self.shape_pairs.items()
+        }
+        missing_shape_pairs = [
+            name
+            for name, item in shape_pair_coverage.items()
+            if not item["formal_attested"]
+        ]
+        requirements_met = not any(
+            (
+                any(missing_requirements.values()),
+                missing_combinations,
+                missing_footprints,
+                missing_shape_pairs,
+            )
+        )
         return {
             "denominator": len(self.entries),
             "selection": selection,
             "formal_attested": formal,
             "formal_requirements": {
-                axis: list(values)
-                for axis, values in self.formal_coverage_requirements.items()
+                axis: dict(values)
+                for axis, values in self.formal_coverage_minimums.items()
             },
             "missing_formal_requirements": missing_requirements,
+            "formal_requirement_deficits": deficits,
+            "combination_coverage": combination_coverage,
+            "missing_combinations": missing_combinations,
+            "external_footprint": {
+                "thresholds": {
+                    "l2_bytes": self.l2_bytes,
+                    "last_level_cache_bytes": self.last_level_cache_bytes,
+                },
+                "selection": footprint_selection,
+                "formal_attested": footprint_formal,
+                "minimums": dict(self.footprint_minimums),
+                "missing": missing_footprints,
+            },
+            "shape_pairs": shape_pair_coverage,
+            "missing_shape_pairs": missing_shape_pairs,
             "formal_requirements_met": requirements_met,
             "formal_attested_count": sum(
-                bool(result.get("formal_attested")) for result in results.values()
+                bool((results.get(entry.slot) or {}).get("formal_attested"))
+                for entry in self.entries
             ),
         }
 

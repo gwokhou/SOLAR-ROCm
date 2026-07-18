@@ -146,9 +146,11 @@ manifest.
 
 The pinned RX 9060 XT official representative corpus is documented in
 [the ROCm benchmark guide](docs/ROCM_BENCHMARKING.md). Its checked audit has
-nine replayable formal workloads, including native OCP FP8, and one explicit
-NVFP4 incompatibility. The gate binds every artifact to the audited gfx1200
-profile and permits no dtype, shape, device, or backend fallback.
+fourteen replayable formal workloads, including FP16 shape pairs and native OCP
+FP8, plus one explicit NVFP4 incompatibility. The gate binds every artifact to
+the audited gfx1200 profile and permits no dtype, shape, device, or backend
+fallback. Repository-local conformance cases are tracked separately and never
+inflate the official denominator.
 
 ## Output File Formats
 

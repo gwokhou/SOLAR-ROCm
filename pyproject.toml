@@ -122,3 +122,8 @@ packages = [
 [tool.setuptools.package-data]
 "solar._vendor.torchview" = ["py.typed"]
 "solar.configs.arch" = ["*.yaml"]
+
+[tool.pytest.ini_options]
+markers = [
+    "orojenesis_real: requires the pinned native Orojenesis mapper",
+]

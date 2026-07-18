@@ -111,8 +111,9 @@ def main() -> None:
                 }
             )
         index = {
-            "schema_version": 1,
+            "schema_version": 2,
             "manifest": str(manifest.path),
+            "manifest_schema_version": manifest.schema_version,
             "manifest_sha256": hashlib.sha256(manifest.path.read_bytes()).hexdigest(),
             "architecture_profile_sha256": manifest.architecture_profile_sha256,
             "architecture_hash": manifest.architecture_hash,

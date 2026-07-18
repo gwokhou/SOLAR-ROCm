@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+name: Orojenesis toolchain
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orojenesis-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mapper-contract:
+    name: Real mapper contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build and execute the native mapper test stage
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker build --target orojenesis-test -f docker/Dockerfile .
+
+  merged-runtime-image:
+    name: Merged ROCm runtime image
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build the single delivery image
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker build --target final -t solar-rocm:ci -f docker/Dockerfile .
+      - name: Verify the installed toolchain and runtime layout
+        run: |
+          docker run --rm --entrypoint /venv/bin/python solar-rocm:ci -c \
+            'from solar.analysis.orojenesis import OrojenesisRunner; r=OrojenesisRunner(); assert r.toolchain_identity["verification_mode"] == "provenance_manifest"'
+          docker run --rm --entrypoint /bin/sh solar-rocm:ci -c \
+            'test -x /opt/orojenesis/bin/timeloop-mapper && test -f /opt/orojenesis/orojenesis-provenance.json && test ! -e /opt/orojenesis/.git && test ! -e /opt/orojenesis/src'
+      - name: Extract the build provenance
+        run: |
+          container_id=$(docker create solar-rocm:ci)
+          docker cp "${container_id}:/opt/orojenesis/orojenesis-provenance.json" ./orojenesis-provenance.json
+          docker rm "${container_id}"
+      - name: Upload provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: orojenesis-provenance
+          path: orojenesis-provenance.json
+          if-no-files-found: error

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
@@ -184,8 +185,27 @@ class AnalysisArtifact:
             contraction_operands_are_graph_external,
         )
         from solar.analysis.orojenesis import (
+            MULTI_EINSUM_COMPOSITION,
+            MULTI_EINSUM_BATCH_COMPOSITION,
+            MULTI_EINSUM_FANOUT_COMPOSITION,
+            MULTI_EINSUM_LAYOUT_COMPOSITION,
+            MULTI_EINSUM_SOLVER,
             OROJENESIS_COMMIT,
+            OROJENESIS_REPOSITORY,
             OrojenesisRunner,
+            compose_multi_einsum_curve,
+            compose_multi_einsum_region_curve,
+            find_multi_einsum_chains,
+            find_multi_einsum_regions,
+            multi_einsum_layer_problem,
+            multi_einsum_mapper_role,
+            multi_einsum_problem,
+            multi_einsum_region_mapper_role,
+            multi_einsum_region_problem,
+            multi_einsum_row_tiles,
+            parse_multi_einsum_curve,
+            parse_multi_einsum_region_curve,
+            parse_multi_mapping_records,
             select_capacity_point,
         )
         from solar.rocm.architecture import ArchitectureProfile
@@ -231,12 +251,42 @@ class AnalysisArtifact:
             if (layer.get("semantic_op") or {}).get("kind") == "einsum"
         }
         solver = metadata.get("orojenesis") or {}
+        if int(solver.get("schema_version", 0)) != 2:
+            raise ValueError("formal analysis requires Orojenesis evidence schema 2")
         if einsum_layers and solver.get("status") != "complete":
             raise ValueError("formal analysis lacks complete Orojenesis evidence")
-        if not einsum_layers and solver.get("status") != "not_applicable":
+        if not einsum_layers and (
+            solver.get("status") != "not_applicable"
+            or solver.get("layers")
+            or solver.get("chains")
+            or solver.get("regions")
+        ):
             raise ValueError(
                 "non-einsum formal analysis has inconsistent solver status"
             )
+        toolchain = solver.get("toolchain")
+        if einsum_layers:
+            if not isinstance(toolchain, dict):
+                raise ValueError("formal analysis lacks Orojenesis toolchain identity")
+            source_identity = toolchain.get("source") or {}
+            artifact_identity = toolchain.get("artifact") or {}
+            if (
+                int(toolchain.get("schema_version", 0)) != 1
+                or source_identity.get("repository") != OROJENESIS_REPOSITORY
+                or source_identity.get("commit") != OROJENESIS_COMMIT
+                or not re.fullmatch(
+                    r"[0-9a-f]{40,64}", str(source_identity.get("tree_git_oid", ""))
+                )
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(source_identity.get("archive_sha256", "")),
+                )
+                or artifact_identity.get("path") != "bin/timeloop-mapper"
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}", str(artifact_identity.get("sha256", ""))
+                )
+            ):
+                raise ValueError("invalid Orojenesis toolchain identity")
 
         fusion = derived_metadata.get("fusion") or {}
         region_by_layer = {
@@ -245,15 +295,43 @@ class AnalysisArtifact:
             for layer_id in region.get("layers") or []
         }
         solver_excesses: list[float] = []
+        applicable_layer_count = 0
         recorded_layers = solver.get("layers") or {}
-        if set(recorded_layers) != set(einsum_layers):
+        recorded_chains = solver.get("chains") or {}
+        recorded_regions = solver.get("regions") or {}
+        expected_chain_ids = {
+            f"chain_{index}": chain
+            for index, chain in enumerate(find_multi_einsum_chains(layers))
+        }
+        if set(recorded_chains) != set(expected_chain_ids):
+            raise ValueError("Orojenesis multi-einsum chain set drifted")
+        expected_region_ids = {
+            f"region_{index}": region
+            for index, region in enumerate(find_multi_einsum_regions(layers))
+        }
+        if set(recorded_regions) != set(expected_region_ids):
+            raise ValueError("Orojenesis multi-einsum region set drifted")
+        recorded_chain_members = {
+            layer_id for chain in expected_chain_ids.values() for layer_id in chain
+        }
+        recorded_region_members = {
+            str(layer_id)
+            for region in expected_region_ids.values()
+            for layer_id in region.get("schedule") or []
+        }
+        multi_members = recorded_chain_members | recorded_region_members
+        if set(recorded_layers) & multi_members or (
+            set(recorded_layers) | multi_members
+        ) != set(einsum_layers):
             raise ValueError("Orojenesis evidence does not cover every einsum layer")
-        for layer_id, layer in einsum_layers.items():
-            result = recorded_layers[layer_id]
+        for layer_id, result in recorded_layers.items():
+            layer = einsum_layers[layer_id]
             if result.get("solver") != "NVlabs/timeloop oaves_keep_max":
                 raise ValueError(f"Orojenesis solver identity mismatch for {layer_id}")
             if result.get("commit") != OROJENESIS_COMMIT:
                 raise ValueError(f"Orojenesis revision mismatch for {layer_id}")
+            if result.get("toolchain") != toolchain:
+                raise ValueError(f"Orojenesis toolchain drifted for {layer_id}")
             word_bits = int(result.get("word_bits", 0))
             if word_bits <= 0 or word_bits % 8:
                 raise ValueError(f"invalid Orojenesis word width for {layer_id}")
@@ -371,12 +449,455 @@ class AnalysisArtifact:
                         f"Orojenesis compulsory traffic drifted for {layer_id}"
                     )
                 solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+                applicable_layer_count += 1
             elif applicability.get("reason") != expected_reason:
                 raise ValueError(f"invalid Orojenesis applicability for {layer_id}")
 
+        for chain_id, layer_ids in expected_chain_ids.items():
+            result = recorded_chains[chain_id]
+            if result.get("solver") != MULTI_EINSUM_SOLVER:
+                raise ValueError(
+                    f"multi-einsum solver identity mismatch for {chain_id}"
+                )
+            if result.get("commit") != OROJENESIS_COMMIT:
+                raise ValueError(f"Orojenesis revision mismatch for {chain_id}")
+            if result.get("toolchain") != toolchain:
+                raise ValueError(f"Orojenesis toolchain drifted for {chain_id}")
+            if result.get("composition") != MULTI_EINSUM_COMPOSITION:
+                raise ValueError(
+                    f"multi-einsum composition identity mismatch for {chain_id}"
+                )
+            word_bits = int(result.get("word_bits", 0))
+            if word_bits <= 0 or word_bits % 8:
+                raise ValueError(f"invalid Orojenesis word width for {chain_id}")
+            word_bytes = word_bits // 8
+            chain_layers = [
+                (layer_id, einsum_layers[layer_id]) for layer_id in layer_ids
+            ]
+            expected_problem = multi_einsum_problem(chain_layers)
+            if result.get("problem") != expected_problem:
+                raise ValueError(f"multi-einsum problem drifted for {chain_id}")
+            descriptors = expected_problem["chain"]["layers"]
+            row_tiles = multi_einsum_row_tiles(int(descriptors[0]["m"]))
+            expected_sweeps = [
+                {
+                    "layer_id": layer_id,
+                    "row_tiles": row_tiles,
+                    "role": multi_einsum_mapper_role(index, len(layer_ids)),
+                }
+                for index, layer_id in enumerate(layer_ids)
+            ]
+            if result.get("sweeps") != expected_sweeps:
+                raise ValueError(f"multi-einsum sweep set drifted for {chain_id}")
+
+            expected_environment = {"TIMELOOP_ENABLE_FIRST_READ_ELISION": "1"}
+            if result.get("environment") != expected_environment:
+                raise ValueError(
+                    f"multi-einsum solver environment drifted for {chain_id}"
+                )
+            required_files = {
+                "chain.yaml",
+                "architecture.yaml",
+                "environment.yaml",
+                "curve",
+            }
+            for layer_index in range(len(layer_ids)):
+                required_files.add(f"problem-layer-{layer_index}.yaml")
+                for row_tile in row_tiles:
+                    required_files.update(
+                        {
+                            f"layer-{layer_index}-m-{row_tile}-architecture.yaml",
+                            f"layer-{layer_index}-m-{row_tile}-mapper.yaml",
+                            f"layer-{layer_index}-m-{row_tile}-problem.yaml",
+                            f"layer-{layer_index}-m-{row_tile}-raw",
+                        }
+                    )
+            evidence_files = result.get("evidence_files") or {}
+            if set(evidence_files) != required_files:
+                raise ValueError(
+                    f"incomplete multi-einsum evidence files for {chain_id}"
+                )
+            chain_files: dict[str, Path] = {}
+            for name, evidence in evidence_files.items():
+                relative = _relative_path(
+                    str((evidence or {}).get("path", "")),
+                    f"orojenesis.{chain_id}.{name}.path",
+                )
+                candidate = (analysis_path.parent / relative).resolve()
+                if (
+                    analysis_path.parent not in candidate.parents
+                    or not candidate.is_file()
+                ):
+                    raise ValueError(
+                        f"multi-einsum evidence file is missing: {relative}"
+                    )
+                digest = cls._parse_sha256(
+                    (evidence or {}).get("sha256"),
+                    f"orojenesis.{chain_id}.{name}.sha256",
+                )
+                if hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+                    raise ValueError(
+                        f"multi-einsum evidence SHA-256 mismatch: {relative}"
+                    )
+                chain_files[name] = candidate
+
+            if (
+                yaml.safe_load(chain_files["chain.yaml"].read_text())
+                != expected_problem
+            ):
+                raise ValueError(f"multi-einsum chain file drifted for {chain_id}")
+            expected_architecture = OrojenesisRunner.multi_architecture(word_bits)
+            if (
+                yaml.safe_load(chain_files["architecture.yaml"].read_text())
+                != expected_architecture
+            ):
+                raise ValueError(f"multi-einsum architecture drifted for {chain_id}")
+            if (
+                yaml.safe_load(chain_files["environment.yaml"].read_text())
+                != expected_environment
+            ):
+                raise ValueError(
+                    f"multi-einsum environment evidence drifted for {chain_id}"
+                )
+
+            chain_raw_paths: list[list[Path]] = []
+            for layer_index, descriptor in enumerate(descriptors):
+                expected_layer_problem = multi_einsum_layer_problem(descriptor)
+                problem_name = f"problem-layer-{layer_index}.yaml"
+                if (
+                    yaml.safe_load(chain_files[problem_name].read_text())
+                    != expected_layer_problem
+                ):
+                    raise ValueError(
+                        f"multi-einsum layer problem drifted for {chain_id}"
+                    )
+                layer_raw_paths: list[Path] = []
+                for row_tile in row_tiles:
+                    prefix = f"layer-{layer_index}-m-{row_tile}"
+                    if (
+                        yaml.safe_load(
+                            chain_files[f"{prefix}-architecture.yaml"].read_text()
+                        )
+                        != expected_architecture
+                    ):
+                        raise ValueError(
+                            f"multi-einsum sweep architecture drifted for {chain_id}"
+                        )
+                    expected_mapper = OrojenesisRunner.multi_mapper_config(
+                        row_tile,
+                        role=multi_einsum_mapper_role(layer_index, len(layer_ids)),
+                    )
+                    if (
+                        yaml.safe_load(chain_files[f"{prefix}-mapper.yaml"].read_text())
+                        != expected_mapper
+                    ):
+                        raise ValueError(f"multi-einsum mapper drifted for {chain_id}")
+                    if (
+                        yaml.safe_load(
+                            chain_files[f"{prefix}-problem.yaml"].read_text()
+                        )
+                        != expected_layer_problem
+                    ):
+                        raise ValueError(
+                            f"multi-einsum sweep problem drifted for {chain_id}"
+                        )
+                    raw_path = chain_files[f"{prefix}-raw"]
+                    parse_multi_mapping_records(raw_path, word_bytes=word_bytes)
+                    layer_raw_paths.append(raw_path)
+                chain_raw_paths.append(layer_raw_paths)
+
+            recomposed_curve = compose_multi_einsum_curve(
+                chain_raw_paths, row_tiles=row_tiles, word_bytes=word_bytes
+            )
+            if recomposed_curve != result.get("curve"):
+                raise ValueError(f"multi-einsum curve drifted for {chain_id}")
+            serialized_curve = parse_multi_einsum_curve(
+                chain_files["curve"], word_bytes=word_bytes
+            )
+            if serialized_curve != recomposed_curve:
+                raise ValueError(
+                    f"serialized multi-einsum curve drifted for {chain_id}"
+                )
+            selected = result.get("selected_capacity") or {}
+            point = select_capacity_point(
+                recomposed_curve, int(selected.get("capacity_bytes", 0))
+            )
+            if point is None or point != selected.get("point"):
+                raise ValueError(
+                    f"multi-einsum capacity point is invalid for {chain_id}"
+                )
+            region_ids = {
+                str(region_by_layer[layer_id]["id"])
+                for layer_id in layer_ids
+                if layer_id in region_by_layer
+            }
+            applicability = result.get("formal_applicability") or {}
+            if (
+                applicability.get("applicable") is not True
+                or applicability.get("layer_ids") != layer_ids
+                or len(region_ids) != 1
+                or applicability.get("region") != next(iter(region_ids))
+                or applicability.get("operand_provenance")
+                != "graph_inputs_and_internal_chain_edges"
+                or applicability.get("reason") != "verified_linear_matmul_tiled_fusion"
+            ):
+                raise ValueError(f"multi-einsum applicability drifted for {chain_id}")
+            first = descriptors[0]
+            last = descriptors[-1]
+            compulsory_elements = int(first["m"]) * int(first["k"])
+            compulsory_elements += sum(
+                int(item["k"]) * int(item["n"]) for item in descriptors
+            )
+            compulsory_elements += int(last["m"]) * int(last["n"])
+            compulsory_bytes = float(compulsory_elements * word_bytes)
+            solver_bytes = float(point["dram_bytes"])
+            if float(result.get("audited_dram_bytes", -1)) != solver_bytes:
+                raise ValueError(f"multi-einsum audited traffic drifted for {chain_id}")
+            if float(result.get("modeled_compulsory_bytes", -1)) != compulsory_bytes:
+                raise ValueError(
+                    f"multi-einsum compulsory traffic drifted for {chain_id}"
+                )
+            solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+            applicable_layer_count += len(layer_ids)
+
+        supported_region_compositions = {
+            MULTI_EINSUM_LAYOUT_COMPOSITION,
+            MULTI_EINSUM_BATCH_COMPOSITION,
+            MULTI_EINSUM_FANOUT_COMPOSITION,
+        }
+        for region_id, expected_region in expected_region_ids.items():
+            result = recorded_regions[region_id]
+            if result.get("solver") != MULTI_EINSUM_SOLVER:
+                raise ValueError(
+                    f"multi-einsum region solver identity mismatch for {region_id}"
+                )
+            if result.get("commit") != OROJENESIS_COMMIT:
+                raise ValueError(f"Orojenesis revision mismatch for {region_id}")
+            if result.get("toolchain") != toolchain:
+                raise ValueError(f"Orojenesis toolchain drifted for {region_id}")
+            if result.get("composition") not in supported_region_compositions:
+                raise ValueError(
+                    f"multi-einsum region composition mismatch for {region_id}"
+                )
+            word_bits = int(result.get("word_bits", 0))
+            if word_bits <= 0 or word_bits % 8:
+                raise ValueError(
+                    f"invalid multi-einsum region word width for {region_id}"
+                )
+            word_bytes = word_bits // 8
+            expected_problem = multi_einsum_region_problem(expected_region)
+            if result.get("problem") != expected_problem:
+                raise ValueError(f"multi-einsum region problem drifted for {region_id}")
+            descriptors = expected_problem["nodes"]
+            expected_sweeps = [
+                {
+                    "node_id": str(descriptor["id"]),
+                    "row_tiles": multi_einsum_row_tiles(int(descriptor["m"])),
+                    "role": multi_einsum_region_mapper_role(
+                        expected_problem, str(descriptor["id"])
+                    ),
+                }
+                for descriptor in descriptors
+            ]
+            if result.get("sweeps") != expected_sweeps:
+                raise ValueError(
+                    f"multi-einsum region sweep set drifted for {region_id}"
+                )
+            expected_environment = {"TIMELOOP_ENABLE_FIRST_READ_ELISION": "1"}
+            if result.get("environment") != expected_environment:
+                raise ValueError(
+                    f"multi-einsum region environment drifted for {region_id}"
+                )
+            required_files = {
+                "region.yaml",
+                "architecture.yaml",
+                "environment.yaml",
+                "curve",
+            }
+            row_tiles_by_node: dict[str, list[int]] = {}
+            for node_index, descriptor in enumerate(descriptors):
+                node_id = str(descriptor["id"])
+                row_tiles = multi_einsum_row_tiles(int(descriptor["m"]))
+                row_tiles_by_node[node_id] = row_tiles
+                required_files.add(f"problem-node-{node_index}.yaml")
+                for row_tile in row_tiles:
+                    prefix = f"node-{node_index}-m-{row_tile}"
+                    required_files.update(
+                        {
+                            f"{prefix}-architecture.yaml",
+                            f"{prefix}-mapper.yaml",
+                            f"{prefix}-problem.yaml",
+                            f"{prefix}-raw",
+                        }
+                    )
+            evidence_files = result.get("evidence_files") or {}
+            if set(evidence_files) != required_files:
+                raise ValueError(
+                    f"incomplete multi-einsum region evidence for {region_id}"
+                )
+            region_files: dict[str, Path] = {}
+            for name, evidence in evidence_files.items():
+                relative = _relative_path(
+                    str((evidence or {}).get("path", "")),
+                    f"orojenesis.{region_id}.{name}.path",
+                )
+                candidate = (analysis_path.parent / relative).resolve()
+                if (
+                    analysis_path.parent not in candidate.parents
+                    or not candidate.is_file()
+                ):
+                    raise ValueError(
+                        f"multi-einsum region evidence is missing: {relative}"
+                    )
+                digest = cls._parse_sha256(
+                    (evidence or {}).get("sha256"),
+                    f"orojenesis.{region_id}.{name}.sha256",
+                )
+                if hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+                    raise ValueError(
+                        f"multi-einsum region evidence SHA-256 mismatch: {relative}"
+                    )
+                region_files[name] = candidate
+            if (
+                yaml.safe_load(region_files["region.yaml"].read_text())
+                != expected_problem
+            ):
+                raise ValueError(f"multi-einsum region file drifted for {region_id}")
+            expected_architecture = OrojenesisRunner.multi_architecture(word_bits)
+            if (
+                yaml.safe_load(region_files["architecture.yaml"].read_text())
+                != expected_architecture
+            ):
+                raise ValueError(
+                    f"multi-einsum region architecture drifted for {region_id}"
+                )
+            if (
+                yaml.safe_load(region_files["environment.yaml"].read_text())
+                != expected_environment
+            ):
+                raise ValueError(
+                    f"multi-einsum region environment evidence drifted for {region_id}"
+                )
+            region_raw_paths: dict[str, list[Path]] = {}
+            for node_index, descriptor in enumerate(descriptors):
+                node_id = str(descriptor["id"])
+                layer_problem = multi_einsum_layer_problem(descriptor)
+                problem_name = f"problem-node-{node_index}.yaml"
+                if (
+                    yaml.safe_load(region_files[problem_name].read_text())
+                    != layer_problem
+                ):
+                    raise ValueError(
+                        f"multi-einsum region node problem drifted for {region_id}"
+                    )
+                node_raw_paths: list[Path] = []
+                role = multi_einsum_region_mapper_role(expected_problem, node_id)
+                for row_tile in row_tiles_by_node[node_id]:
+                    prefix = f"node-{node_index}-m-{row_tile}"
+                    if (
+                        yaml.safe_load(
+                            region_files[f"{prefix}-architecture.yaml"].read_text()
+                        )
+                        != expected_architecture
+                    ):
+                        raise ValueError(
+                            f"multi-einsum region sweep architecture drifted for {region_id}"
+                        )
+                    expected_mapper = OrojenesisRunner.multi_mapper_config(
+                        row_tile, role=role
+                    )
+                    if (
+                        yaml.safe_load(
+                            region_files[f"{prefix}-mapper.yaml"].read_text()
+                        )
+                        != expected_mapper
+                    ):
+                        raise ValueError(
+                            f"multi-einsum region mapper drifted for {region_id}"
+                        )
+                    if (
+                        yaml.safe_load(
+                            region_files[f"{prefix}-problem.yaml"].read_text()
+                        )
+                        != layer_problem
+                    ):
+                        raise ValueError(
+                            f"multi-einsum region sweep problem drifted for {region_id}"
+                        )
+                    raw_path = region_files[f"{prefix}-raw"]
+                    parse_multi_mapping_records(raw_path, word_bytes=word_bytes)
+                    node_raw_paths.append(raw_path)
+                region_raw_paths[node_id] = node_raw_paths
+            recomposed_curve = compose_multi_einsum_region_curve(
+                expected_problem,
+                region_raw_paths,
+                row_tiles_by_node=row_tiles_by_node,
+                word_bytes=word_bytes,
+            )
+            if recomposed_curve != result.get("curve"):
+                raise ValueError(f"multi-einsum region curve drifted for {region_id}")
+            serialized_curve = parse_multi_einsum_region_curve(
+                region_files["curve"], word_bytes=word_bytes
+            )
+            if serialized_curve != recomposed_curve:
+                raise ValueError(
+                    f"serialized multi-einsum region curve drifted for {region_id}"
+                )
+            selected = result.get("selected_capacity") or {}
+            point = select_capacity_point(
+                recomposed_curve, int(selected.get("capacity_bytes", 0))
+            )
+            if point is None or point != selected.get("point"):
+                raise ValueError(
+                    f"multi-einsum region capacity point is invalid for {region_id}"
+                )
+            layer_ids = [str(item) for item in expected_problem["schedule"]]
+            fusion_region_ids = {
+                str(region_by_layer[layer_id]["id"])
+                for layer_id in layer_ids
+                if layer_id in region_by_layer
+            }
+            applicability = result.get("formal_applicability") or {}
+            if (
+                applicability.get("applicable") is not True
+                or applicability.get("layer_ids") != layer_ids
+                or len(fusion_region_ids) != 1
+                or applicability.get("region") != next(iter(fusion_region_ids))
+                or applicability.get("operand_provenance")
+                != "graph_inputs_and_verified_internal_region_edges"
+                or applicability.get("reason") != "verified_matmul_region_tiled_fusion"
+            ):
+                raise ValueError(
+                    f"multi-einsum region applicability drifted for {region_id}"
+                )
+            by_id = {str(item["id"]): item for item in descriptors}
+            compulsory_elements = sum(
+                int(by_id[root]["m"]) * int(by_id[root]["k"])
+                for root in expected_problem["roots"]
+            )
+            compulsory_elements += sum(
+                int(item["k"]) * int(item["n"]) for item in descriptors
+            )
+            compulsory_elements += sum(
+                int(by_id[leaf]["m"]) * int(by_id[leaf]["n"])
+                for leaf in expected_problem["leaves"]
+            )
+            compulsory_bytes = float(compulsory_elements * word_bytes)
+            solver_bytes = float(point["dram_bytes"])
+            if float(result.get("audited_dram_bytes", -1)) != solver_bytes:
+                raise ValueError(
+                    f"multi-einsum region audited traffic drifted for {region_id}"
+                )
+            if float(result.get("modeled_compulsory_bytes", -1)) != compulsory_bytes:
+                raise ValueError(
+                    f"multi-einsum region compulsory traffic drifted for {region_id}"
+                )
+            solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+            applicable_layer_count += len(layer_ids)
+
         expected_io_bytes = fused_bytes + max(solver_excesses, default=0.0)
         expected_coverage = {
-            "applicable_layers": len(solver_excesses),
+            "applicable_layers": applicable_layer_count,
             "total_layers": len(einsum_layers),
         }
         if einsum_layers and solver.get("formal_coverage") != expected_coverage:

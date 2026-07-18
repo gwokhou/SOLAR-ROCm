@@ -296,10 +296,17 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
                 "conditional": target in {"reshape", "contiguous"},
             }
         ]
+    overload = str(layer.get("overload", "default"))
+    if (
+        overload == "default"
+        and target in {"std", "std_mean", "var", "var_mean"}
+        and "dim" in kwargs
+    ):
+        overload = "correction" if "correction" in kwargs else "dim"
     return {
         "kind": "aten",
         "target": target,
-        "overload": str(layer.get("overload", "default")),
+        "overload": overload,
         "arguments": arguments,
         "kwargs": kwargs,
         "effects": {

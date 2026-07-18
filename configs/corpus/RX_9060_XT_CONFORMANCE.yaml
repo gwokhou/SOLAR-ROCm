@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+source:
+  kind: repository_local
+  suite_id: solar/rdna4-source-to-sol-conformance
+target:
+  architecture_profile: ../arch/RX_9060_XT.yaml
+  architecture_profile_sha256: e415ab14f0992183886d732ad20da06b8346bfb2ef1e88a4de68fd3d02751906
+requirements:
+  features:
+    canonical_linear_chain: 1
+    zero_copy_layout_bridge: 1
+    broadcast_batch_flatten: 1
+    fanout_tree: 1
+    conditional_alias_rejection: 1
+    artifact_replay: 1
+    toolchain_identity: 2
+  verdicts: {accept: 6, reject: 2}
+cases:
+  - id: canonical_linear_chain_accept
+    feature: canonical_linear_chain
+    verdict: accept
+    expected_contract: legacy_linear_matmul_chain
+    regression_test: ../../tests/test_p0_semantics_and_fusion.py::test_multi_einsum_chain_and_compatible_tile_curve
+  - id: zero_copy_layout_bridge_accept
+    feature: zero_copy_layout_bridge
+    verdict: accept
+    expected_contract: linear_matmul_with_axis_maps
+    regression_test: ../../tests/test_p0_semantics_and_fusion.py::test_extended_multi_einsum_regions_cover_layout_batch_and_fanout
+  - id: broadcast_batch_flatten_accept
+    feature: broadcast_batch_flatten
+    verdict: accept
+    expected_contract: broadcast_batch_linear_matmul
+    regression_test: ../../tests/test_p0_semantics_and_fusion.py::test_extended_multi_einsum_regions_cover_layout_batch_and_fanout
+  - id: fanout_tree_accept
+    feature: fanout_tree
+    verdict: accept
+    expected_contract: matmul_fanout_tree
+    regression_test: ../../tests/test_p0_semantics_and_fusion.py::test_extended_multi_einsum_regions_cover_layout_batch_and_fanout
+  - id: conditional_alias_reject
+    feature: conditional_alias_rejection
+    verdict: reject
+    expected_contract: no_verified_multi_einsum_region
+    regression_test: ../../tests/test_p0_semantics_and_fusion.py::test_extended_multi_einsum_regions_cover_layout_batch_and_fanout
+  - id: extended_artifact_replay_accept
+    feature: artifact_replay
+    verdict: accept
+    expected_contract: independently_recomposed_raw_mapping_evidence
+    regression_test: ../../tests/test_source_to_sol_verification.py::test_extended_multi_einsum_region_is_independently_replayed
+  - id: installed_toolchain_identity_accept
+    feature: toolchain_identity
+    verdict: accept
+    expected_contract: provenance_manifest_hash_bound
+    regression_test: ../../tests/test_orojenesis_toolchain_identity.py::test_installed_toolchain_identity_is_hash_bound
+  - id: toolchain_tamper_reject
+    feature: toolchain_identity
+    verdict: reject
+    expected_contract: binary_or_revision_identity_mismatch
+    regression_test: ../../tests/test_orojenesis_toolchain_identity.py::test_installed_toolchain_rejects_binary_and_revision_tampering

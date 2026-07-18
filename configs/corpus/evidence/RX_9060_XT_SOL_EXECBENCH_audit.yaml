@@ -1,12 +1,13 @@
-schema_version: 1
+schema_version: 2
 source:
   dataset_id: nvidia/SOL-ExecBench
   revision: 63699402f003496acc3af4eb534a5304a8ac1ea9
   manifest: configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml
-  manifest_sha256: 0dfdb91ab6e605025fb00b2ad9140262317fb131fa86c10d4ef82d02300a34fb
+  manifest_sha256: 9c8b2ba517d63b1463979ecb538cdd1c2d2b37c87495a5ddf76a19740d30cf17
   architecture_profile: ../arch/RX_9060_XT.yaml
   architecture_profile_sha256: e415ab14f0992183886d732ad20da06b8346bfb2ef1e88a4de68fd3d02751906
   architecture_hash: 5a134450baa2da540ff161ce77984d1cc9b58cb6fe910866651697463c73cdd3
+  manifest_schema_version: 2
 results:
   attention_backward_fp32:
     identity:
@@ -76,8 +77,8 @@ results:
       workload_uuid: ff15d496-108e-5529-bd40-3f27afe7cf19
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 4d2374a8f480a66df36ee65977ffb134c64a17974f8c14cbd2a9889d52a548d8
-    verification_sha256: 20d38447c5d9e7c544d65c187b8d9d9a3a1cecb3eb6b06e964272a1457357273
+    analysis_sha256: 6cfa7203ee817a77b9485732c2421a1930483432fae95a9820b567b5276e84d7
+    verification_sha256: 86540d761a40f9d62127b39a9de94824f6beb1bca0937fe30fad4b714e95503f
   norm_forward_bf16:
     identity:
       config: L1
@@ -146,8 +147,8 @@ results:
       workload_uuid: b6b63196-7f11-5b0d-969e-33e44f70975f
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 2e2fc22b36eba492463fd117fd6262727b5e9dbfb8c814235d67425f04b01afb
-    verification_sha256: 22ad23565e9c988f160be5730ad6f01fb5397c5819a2fd64dce9438d532a5a9b
+    analysis_sha256: e96e8c1355e4af8c363506670ad893ac217044ec77821e907ae5272bf4aeeb9d
+    verification_sha256: 6b978c73618e57fbaaaef015b4c74bec8d61368bdc4cc2bab162be76a134c3fa
   norm_backward_bf16:
     identity:
       config: L1
@@ -216,8 +217,8 @@ results:
       workload_uuid: cf9bd8ed-f80a-54eb-9fc2-9f3d5970f8c1
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 32119cc56987c25b3b292fc4a219aa19f4fde84b0adbc737418d88ca99777e1d
-    verification_sha256: 9020e2cd0e35efca8019a563d264abfc7228d018c6f4c52506591063c9bc8d14
+    analysis_sha256: 4c757145b91567e943e846a30ac650289b92e5733b3653117e8209e381b9446b
+    verification_sha256: 2f54f8a5dba89d1de0c8826632509d2ddf00ee5f1a2fa4de51f679a45b4014bc
   ssm_backward_bf16:
     identity:
       config: L1
@@ -286,8 +287,8 @@ results:
       workload_uuid: a2e57e4a-476a-5b71-a8f5-e6726ddba86b
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 9614c91eb690d3ed5d489277a2466df5f75923b93e08075adf0b42fae4fe4670
-    verification_sha256: 7f1741b8561f8bc13db92f8e50aceddc9ca63ce578327cac9634dcdf5aa63d32
+    analysis_sha256: 2b50cbb705f52444fa9952dc0eaf48d7676bd326297892aa90c2fad37ba9aa75
+    verification_sha256: 088a700b77a181099fa758c031e9a9c0ccf8caa2421515c6c0d42d247aa9f94b
   conv_forward_fp32:
     identity:
       config: L1
@@ -355,8 +356,8 @@ results:
       workload_uuid: ca8527b4-8811-5614-9515-e5ba498f168d
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: c3068371cc9e9f8a6f36c84b29be701ccdf62530b5baefdcd1d2fb8e5f6ac2f8
-    verification_sha256: b4be198f0652cc38f3c979a01cbb2ca3e8395f6d474b87551c3b7ddd300f073c
+    analysis_sha256: f7511f8453cb449efc5078cf608a5631c3ad62549fec80d05df7c0dcf0b17436
+    verification_sha256: 6ff0f96c6749644112193825a5d5b9409d242cfc0c4f0a7bd8a1d7599bf9eafb
   conv_forward_dynamic_next_fp32:
     identity:
       config: L1
@@ -424,8 +425,8 @@ results:
       workload_uuid: 426a537c-9a07-578e-bf40-b45746f82335
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 5509e0888df8a83de3a81df369baf774e358b09abf245aa19947391f6abe2aa1
-    verification_sha256: c2cebfa6c63d57b637b3888539e8add4ad083fac39c3832a1381f2f703a39e79
+    analysis_sha256: 2fb386b88f0a82e3d730424fc4d708a3b00b3147d6153e8d12c1e2cba833790c
+    verification_sha256: 2f09c1d3e75ef4ff2c2bb312cb1bdf075291352ed9f95339ab047053f49dd7b2
   attention_forward_bf16:
     identity:
       config: L1
@@ -493,8 +494,8 @@ results:
       workload_uuid: 9ea9d093-cc9d-5e29-a18b-899d0f60238b
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: de99e61070f6d3700724b888b12ea930cd18821396360d8ed04a349191af9655
-    verification_sha256: 8661e8b7928405bf6fb63699ec3d0336de1ed694520932ffc78837d32c05a303
+    analysis_sha256: 88c21652b634e6ddcc98bb411c7f3fe86337676914942809c75275b46eb6fce3
+    verification_sha256: a4b8332ec8ead6e631ef986e9c13d0afb08c231369123d909e714bb3a3d9bbe1
   moe_forward_bf16:
     identity:
       config: L1
@@ -563,8 +564,8 @@ results:
       workload_uuid: 0bda2a65-30fb-51ee-a53d-4506adc7bf9c
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 92c46199f37f07702e43f0f455d38c6f7af3b00285f24ed27472a0393fbf0deb
-    verification_sha256: 349e1ce6d713eb9e617b8202aae426020558b9a553b1e62a0a12918585e7f14b
+    analysis_sha256: 9705128f45bcf36644645e79a6dad71640c4f7eea50346daf7fff74eb5702d8a
+    verification_sha256: 9c2c0396190c9fbe25bc5b5605b9b352e57b5502ca7192c21418168ef1d7dd66
   fp8_block_scale:
     identity:
       config: Quant
@@ -632,8 +633,8 @@ results:
       workload_uuid: 907370b8-2db6-5fde-aa89-a00ee3e73c1a
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 3528a4e90f75ea582fbff2aa8565cb938fb8d7a170386e77bcb7705a61e54f4c
-    verification_sha256: 5cc5a5c698b288f20296269650d6ab2d36c9e1ac3f0251d7f17a87f60d9cd135
+    analysis_sha256: 3c9a14423b37010d82930ed13f0d5190d27c1640539f4407eb46d7c57009e92c
+    verification_sha256: 33492269d63c1035c7711339ee1c3ae92bae6e81037a6ab63092b171a082caaf
   nvfp4_projection:
     identity:
       config: Quant
@@ -694,85 +695,498 @@ results:
       workload_jsonl_sha256: b67268217dce0051a0e1535f8959d00253dfb07783df2ff76e3e3319845df3ba
       workload_uuid: 2c3eef24-5c2e-5a61-b7f1-237d5adf1972
     formal_attested: false
-    formal_reason: benchmark_missing
+    formal_reason: formal_artifacts_missing
+  fp16_gemm_m1:
+    identity:
+      config: FlashInfer-Bench
+      problem: 004_gemm_n128_k2048
+      workload_uuid: 91e43228-c0a7-457e-9424-1d3461621362
+    compatibility:
+      definition_sha256: a8bf606d8d26e4b0c09b3f82034d42c1290ff8f84b6a9179f3b0e177502943d6
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float16
+        external_inputs: {}
+        minimum_storage_bytes: 528640
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 004_gemm_n128_k2048
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 7b5a8aee66ac05da19fa601598d928681e757b42fac6ac7ebe23a9bec5e897b6
+      workload_uuid: 91e43228-c0a7-457e-9424-1d3461621362
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 9b68a8dab2798106da134b94392c60773ebd70cf3768526c7f6105670a9c0b00
+    verification_sha256: 27439d26c75b3c32a98758fdb4ed32e571906d0d29b1596aa0b293838e46edab
+  fp16_gemm_m8828:
+    identity:
+      config: FlashInfer-Bench
+      problem: 004_gemm_n128_k2048
+      workload_uuid: e3fced00-f851-471a-b2a3-d3b1fb632c5b
+    compatibility:
+      definition_sha256: a8bf606d8d26e4b0c09b3f82034d42c1290ff8f84b6a9179f3b0e177502943d6
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float16
+        external_inputs: {}
+        minimum_storage_bytes: 38943744
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 004_gemm_n128_k2048
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 7b5a8aee66ac05da19fa601598d928681e757b42fac6ac7ebe23a9bec5e897b6
+      workload_uuid: e3fced00-f851-471a-b2a3-d3b1fb632c5b
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 80c9e0f1681db5269239a89086d62788b3d9959ba03acc8d9c2699cfdadf0cc1
+    verification_sha256: 5eced3f720f62f89eb9f2ba7ad75650992e51135d4c6f0330bf63f31ff1b956c
+  attention_value_transpose_bf16:
+    identity:
+      config: L1
+      problem: 010_attention_value_projection_with_transpose
+      workload_uuid: 67c51f93-ea69-5b99-9614-b9ae0a149f6a
+    compatibility:
+      definition_sha256: e496c6b26ac2a7b1320930f7de4eee88de8c2d25ef07cd884c9014b869351841
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        external_inputs: {}
+        minimum_storage_bytes: 12058624
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 010_attention_value_projection_with_transpose
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: dcc555224e1816c45e6b24f964435a02c73f6961c1ab476df8ea8aa887f6d90b
+      workload_uuid: 67c51f93-ea69-5b99-9614-b9ae0a149f6a
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 2020101b9b3d4a39b6e97deb3c18093b0c89cbd80cf8be9f7f99e42c772fd965
+    verification_sha256: 96a3f5d9571a1a80aea04a66dd1f28e50e0de1ad0a72385d4d9ec678c2ed663d
+  attention_qkv_reshape_bf16:
+    identity:
+      config: L1
+      problem: 050_attention_qkv_projection_with_bias_and_reshape
+      workload_uuid: 2a89c694-cc4f-590b-a3ac-58a2fa977c68
+    compatibility:
+      definition_sha256: 4b34e472236a7774903d15f211f0aea15b0a1601c588c3156c02664099b36345
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - bfloat16
+        external_inputs: {}
+        minimum_storage_bytes: 2539264
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 050_attention_qkv_projection_with_bias_and_reshape
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 8c2c16dcd227106e33d6bd4e4310ba6ad31ea334ca04f8c8032fd05a5c533971
+      workload_uuid: 2a89c694-cc4f-590b-a3ac-58a2fa977c68
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 574648204512e554713cdfe7a55e0eb6e1035b73d7c4643c3971513174ed500b
+    verification_sha256: a8002f5398746c2144af4848995b8785ea922cdc5ba7e24e14842385aecebe33
+  whisper_projection_fp16:
+    identity:
+      config: L1
+      problem: 077_whisper_decoder_output_projection
+      workload_uuid: f16caebe-a2e8-5550-b7ed-6efb043e1600
+    compatibility:
+      definition_sha256: 4151e5a8134960d10d50e2dbeb3ce5363f0cfe97d4b303bdb9044f6f5a3a13be
+      environment:
+        capabilities:
+          amd_smi:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/amd-smi
+          ck:
+            available: true
+            detail: /opt/rocm-7.2.0/include/ck/ck.hpp
+          hipblas:
+            available: true
+            detail: /opt/rocm-7.2.0/include/hipblas/hipblas.h
+          hipcc:
+            available: true
+            detail: /usr/bin/hipcc
+          miopen:
+            available: true
+            detail: /opt/rocm-7.2.0/include/miopen/miopen.h
+          pytorch_rocm:
+            available: true
+            detail: HIP-backed torch.cuda
+          rocprofv3:
+            available: true
+            detail: /opt/rocm-7.2.0/bin/rocprofv3
+          rocwmma:
+            available: true
+            detail: /opt/rocm-7.2.0/include/rocwmma/rocwmma.hpp
+          triton_rocm:
+            available: true
+            detail: importable
+        device_name: AMD Radeon RX 9060 XT
+        gfx_target: gfx1200
+        hip_version: 7.2.26015
+        normalized_compute_units: 32
+        os: Linux-6.17.0-40-generic-x86_64-with-glibc2.39
+        pytorch_compute_units: 16
+        rocm_version: 7.2.26015-fc0010cf6a
+        torch_version: 2.11.0+rocm7.2
+        total_memory_bytes: 17095983104
+      evidence:
+        dtypes:
+        - float16
+        external_inputs: {}
+        minimum_storage_bytes: 132883252
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
+      fallbacks_used: []
+      problem: 077_whisper_decoder_output_projection
+      reason_code: compatible
+      schema_version: 2
+      stage: reference_complete
+      status: compatible
+      upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
+      workload_jsonl_sha256: 58797f8f2034c8d07a8336a596883bca1f97141cc16c10bc6a33794ccdc4fe0b
+      workload_uuid: f16caebe-a2e8-5550-b7ed-6efb043e1600
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: c66e00299440ef799a8cdfc3fb94d5a8783da9e1e9a2f2722cfd7b410e38e315
+    verification_sha256: 964c246c09a078f0d1041b14cf0da0c285128be965640d9486fd64160df7880d
 coverage:
-  denominator: 10
+  denominator: 15
   selection:
     operation:
-      attention: 4
+      attention: 6
       norm: 2
       ssm: 1
       conv: 2
       moe: 1
+      matmul: 3
     dtype:
       fp32: 3
-      bf16: 5
+      bf16: 7
       fp8: 1
       nvfp4: 1
+      fp16: 3
     pass_kind:
       backward: 3
-      forward: 7
+      forward: 12
     dynamic_path:
-      static_instance: 8
-      dynamic_shape_small: 1
-      dynamic_shape_next: 1
+      static_instance: 11
+      dynamic_shape_small: 2
+      dynamic_shape_next: 2
     input_kind:
       random_scalar: 3
-      random: 5
+      random: 10
       custom: 2
   formal_attested:
     operation:
-      attention: 3
+      attention: 5
       norm: 2
       ssm: 1
       conv: 2
       moe: 1
+      matmul: 3
     dtype:
       fp32: 3
-      bf16: 5
+      bf16: 7
       fp8: 1
       nvfp4: 0
+      fp16: 3
     pass_kind:
       backward: 3
-      forward: 6
+      forward: 11
     dynamic_path:
-      static_instance: 7
-      dynamic_shape_small: 1
-      dynamic_shape_next: 1
+      static_instance: 10
+      dynamic_shape_small: 2
+      dynamic_shape_next: 2
     input_kind:
       random_scalar: 3
-      random: 5
+      random: 10
       custom: 1
   formal_requirements:
     operation:
-    - attention
-    - norm
-    - moe
-    - ssm
-    - conv
+      attention: 5
+      norm: 2
+      moe: 1
+      ssm: 1
+      conv: 2
+      matmul: 3
     dtype:
-    - fp32
-    - bf16
-    - fp8
+      fp32: 3
+      bf16: 7
+      fp8: 1
+      fp16: 3
     pass_kind:
-    - forward
-    - backward
+      forward: 11
+      backward: 3
     dynamic_path:
-    - static_instance
-    - dynamic_shape_small
-    - dynamic_shape_next
+      static_instance: 10
+      dynamic_shape_small: 2
+      dynamic_shape_next: 2
     input_kind:
-    - random_scalar
-    - random
-    - custom
+      random_scalar: 3
+      random: 10
+      custom: 1
   missing_formal_requirements:
     operation: []
     dtype: []
     pass_kind: []
     dynamic_path: []
     input_kind: []
+  formal_requirement_deficits:
+    operation: {}
+    dtype: {}
+    pass_kind: {}
+    dynamic_path: {}
+    input_kind: {}
+  combination_coverage:
+  - operation: attention
+    dtype: fp8
+    pass_kind: forward
+    min_count: 1
+    selection_count: 1
+    formal_attested_count: 1
+  - operation: attention
+    dtype: fp32
+    pass_kind: backward
+    min_count: 1
+    selection_count: 1
+    formal_attested_count: 1
+  - operation: norm
+    dtype: bf16
+    pass_kind: forward
+    min_count: 1
+    selection_count: 1
+    formal_attested_count: 1
+  - operation: norm
+    dtype: bf16
+    pass_kind: backward
+    min_count: 1
+    selection_count: 1
+    formal_attested_count: 1
+  - operation: matmul
+    dtype: fp16
+    pass_kind: forward
+    min_count: 3
+    selection_count: 3
+    formal_attested_count: 3
+  missing_combinations: []
+  external_footprint:
+    thresholds:
+      l2_bytes: 4194304
+      last_level_cache_bytes: 33554432
+    selection:
+      fits_l2: 7
+      l2_to_llc: 5
+      exceeds_llc: 3
+    formal_attested:
+      fits_l2: 7
+      l2_to_llc: 4
+      exceeds_llc: 3
+    minimums:
+      fits_l2: 6
+      l2_to_llc: 3
+      exceeds_llc: 2
+    missing: {}
+  shape_pairs:
+    fp16_gemm_m_scale:
+      slots:
+      - fp16_gemm_m1
+      - fp16_gemm_m8828
+      formal_attested: true
+  missing_shape_pairs: []
   formal_requirements_met: true
-  formal_attested_count: 9
+  formal_attested_count: 14
 gate:
   terminal_evidence_complete: true
   all_compatible_formally_attested: true

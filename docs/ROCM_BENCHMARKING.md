@@ -50,7 +50,10 @@ operation precision; the evaluator records the artifact, graph, benchmark,
 reference, architecture, solution, and environment identities in the bound
 report chain. Loading a benchmark deterministically reruns the analyzer on the
 bound graph and compares FLOPs, fused bytes, and the precision breakdown. It
-also revalidates the pinned Orojenesis inputs/raw curve and requires the
+also revalidates pinned single-einsum inputs/raw curves and, for supported
+MatMul regions, rebuilds each fusion-friendly mapper sweep and recomposes the
+joint curve from mapping-level raw OAVES records, including exact axis maps,
+broadcast-batch flattening, and fanout schedules. It requires the
 analysis architecture identity to equal the evaluator profile. A schema-v3
 benchmark is rejected if any traffic-bearing tensor lacks an explicit dtype or
 executable semantic record; neighboring quantization sidecars cannot override
@@ -109,12 +112,12 @@ No cross-hardware extrapolation is claimed by the bundled local audit.
 
 ## Pinned official representative corpus
 
-`configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml` pins ten entries from
+`configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml` pins fifteen entries from
 `nvidia/SOL-ExecBench` revision
 `63699402f003496acc3af4eb534a5304a8ac1ea9`, including attention, norm, MoE,
-SSM, convolution, FP32/BF16/OCP FP8, forward/backward, dynamic shapes, and
-structured inputs. Nine compatible entries have replayable formal artifacts
-and independent FLOP, byte, and resource-counter goldens. The official OCP
+SSM, convolution, MatMul, FP32/BF16/FP16/OCP FP8, forward/backward, dynamic
+shapes, and structured inputs. Fourteen compatible entries have replayable
+formal artifacts and independent FLOP, byte, and resource-counter goldens. The official OCP
 E4M3 block-scale workload is formally scored as native gfx1200 FP8 with FP32
 accumulation. NVFP4 is retained as an explicit
 `unsupported_quantization_format` result; it is not converted, shrunk, sent to
@@ -150,10 +153,16 @@ The checked local result is
 `configs/corpus/evidence/RX_9060_XT_SOL_EXECBENCH_audit.yaml`. Every
 compatibility record must contain `fallbacks_used: []`; incompatibility and OOM
 are outcomes to record, not reasons to mutate the workload. The checked gate is
-`passed: true`: all ten entries have terminal evidence, all nine compatible
-entries are formally attested, and every required operation/dtype/pass/dynamic
-path/input-kind bucket has at least one formal artifact. The report also binds
-the raw profile SHA-256 and canonical architecture hash.
+`passed: true`: all fifteen entries have terminal evidence, all fourteen
+compatible entries are formally attested, and the per-axis minimums, critical
+cross-axis combinations, L2/last-level-cache footprint classes, and fixed
+M=1/M=8828 shape pair all pass. The report also binds the raw profile SHA-256
+and canonical architecture hash.
+
+`configs/corpus/RX_9060_XT_CONFORMANCE.yaml` is a separate repository-local
+suite for accept/reject contracts such as layout bridges, batch flattening,
+fanout, alias rejection, artifact replay, and toolchain tampering. These cases
+run in pytest and never contribute to the official corpus denominator.
 
 ## Timing profiles
 

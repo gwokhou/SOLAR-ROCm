@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
+# SPDX-License-Identifier: Apache-2.0
+
+.git
+.github
+.idea
+.mypy_cache
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+build
+dist
+htmlcov
+output_*
+solar_outputs
+test_output

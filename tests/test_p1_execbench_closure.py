@@ -20,6 +20,7 @@ from solar.analysis.resources import (
     classify_layer_resources,
 )
 from solar.benchmark.calibration import ResourceProbe, RocmCalibrator
+from solar.benchmark.conformance_corpus import ConformanceCorpusManifest
 from solar.benchmark.evaluator import RocmEvaluator
 from solar.benchmark.models import (
     CompatibilityArtifact,
@@ -109,6 +110,15 @@ def test_resource_model_counts_distinct_amd_pipelines() -> None:
         arguments=[{"tensor": 0}],
         kwargs={"dim": {"value": 1}},
     )
+    variance = _aten_layer(
+        "var",
+        [[4, 8]],
+        [[4]],
+        ["torch.float32"],
+        ["torch.float32"],
+        arguments=[{"tensor": 0}],
+        kwargs={"dim": {"value": 1}},
+    )
     conversion = _aten_layer(
         "to",
         [[32]],
@@ -126,6 +136,12 @@ def test_resource_model_counts_distinct_amd_pipelines() -> None:
     assert classify_layer_resources(
         reduction, macs=0, fallback_precision="fp16", strict=True
     )["work"] == {"reduction": {"fp32": 28}}
+    assert classify_layer_resources(
+        variance, macs=0, fallback_precision="fp16", strict=True
+    )["work"] == {
+        "reduction": {"fp32": 56},
+        "valu": {"fp32": 68},
+    }
     assert classify_layer_resources(
         conversion, macs=0, fallback_precision="fp16", strict=True
     )["work"] == {"conversion": {"fp32->fp16": 32}}
@@ -430,7 +446,8 @@ def test_pinned_official_corpus_gate_preserves_incompatibilities() -> None:
         ).read_text()
     )
 
-    assert len(manifest.entries) == 10
+    assert manifest.schema_version == 2
+    assert len(manifest.entries) == 15
     assert (
         manifest.architecture_profile_path
         == (_ROOT / "configs/arch/RX_9060_XT.yaml").resolve()
@@ -450,13 +467,18 @@ def test_pinned_official_corpus_gate_preserves_incompatibilities() -> None:
         manifest.architecture_profile_sha256
     )
     assert report["source"]["architecture_hash"] == manifest.architecture_hash
-    assert report["coverage"]["formal_attested_count"] == 9
+    assert report["coverage"]["denominator"] == 15
+    assert report["coverage"]["formal_attested_count"] == 14
     assert report["coverage"]["formal_attested"]["dtype"]["fp8"] == 1
     assert report["coverage"]["formal_requirements_met"] is True
     assert all(
         not missing
         for missing in report["coverage"]["missing_formal_requirements"].values()
     )
+    assert report["coverage"]["missing_combinations"] == []
+    assert report["coverage"]["external_footprint"]["missing"] == {}
+    assert report["coverage"]["missing_shape_pairs"] == []
+    assert report["coverage"]["shape_pairs"]["fp16_gemm_m_scale"]["formal_attested"]
     incompatible = [
         result
         for result in report["results"].values()
@@ -486,7 +508,7 @@ def test_official_corpus_batch_build_is_deterministic_and_profile_bound() -> Non
         python_executable="python",
     )
 
-    assert len(commands) == 9
+    assert len(commands) == 13
     assert (
         len(
             [
@@ -504,6 +526,32 @@ def test_official_corpus_batch_build_is_deterministic_and_profile_bound() -> Non
     )
     assert all("--workload" not in command for command in commands)
     assert all(command[-2:] == ["--blob-root", "/blobs"] for command in commands)
+
+
+def test_local_conformance_corpus_is_separate_and_fail_closed() -> None:
+    manifest = ConformanceCorpusManifest.load(
+        _ROOT / "configs/corpus/RX_9060_XT_CONFORMANCE.yaml"
+    )
+
+    assert len(manifest.cases) == 8
+    assert all("SOL_EXECBENCH" not in case.case_id for case in manifest.cases)
+    assert {case.verdict for case in manifest.cases} == {"accept", "reject"}
+    assert (
+        manifest.architecture_profile_path
+        == (_ROOT / "configs/arch/RX_9060_XT.yaml").resolve()
+    )
+    assert manifest.coverage({case.case_id: True for case in manifest.cases}) == {
+        "denominator": 8,
+        "passed_count": 8,
+        "missing": [],
+        "failed": [],
+        "unknown": [],
+        "passed": True,
+    }
+    failed = manifest.coverage({manifest.cases[0].case_id: True, "unknown": True})
+    assert failed["passed"] is False
+    assert failed["unknown"] == ["unknown"]
+    assert len(failed["missing"]) == 7
 
 
 def test_official_corpus_rejects_artifact_from_other_profile(

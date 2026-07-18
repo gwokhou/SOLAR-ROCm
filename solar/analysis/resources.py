@@ -95,6 +95,7 @@ _COMPOSITE_SFU_OPS = frozenset(
 _REDUCTION_OPS = frozenset(
     {"amax", "amin", "argmax", "argmin", "logsumexp", "mean", "prod", "sum"}
 )
+_VARIANCE_OPS = frozenset({"std", "std_mean", "var", "var_mean"})
 _NORMALIZATION_OPS = frozenset(
     {"batch_norm", "group_norm", "layer_norm", "log_softmax", "softmax"}
 )
@@ -371,6 +372,23 @@ def classify_layer_resources(
             add("reduction", mode, 2 * combines, "mean and variance reductions")
             add("sfu", mode, groups, "inverse square root per group")
             add("valu", mode, 5 * output_n, "center, scale, normalize, affine")
+    elif target in _VARIANCE_OPS:
+        shape = (
+            input_shapes[0]
+            if input_shapes and isinstance(input_shapes[0], list)
+            else None
+        )
+        groups = _reduction_groups(shape, semantic)
+        combines = max(0, input_n - groups)
+        add("reduction", mode, 2 * combines, "mean and squared-deviation combines")
+        add(
+            "valu",
+            mode,
+            2 * input_n + groups,
+            "center, square, and normalize variance values",
+        )
+        if target in {"std", "std_mean"}:
+            add("sfu", mode, max(output_n, groups), "square root per reduction group")
     elif target in _REDUCTION_OPS:
         shape = (
             input_shapes[0]

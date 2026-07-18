@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import copy
+
 # torchview is a lazily exposed vendored module and PyTorch's generated
 # functional bindings do not carry signatures that pylint can infer.
 # pylint: disable=no-name-in-module,not-callable
@@ -14,7 +16,19 @@ import torch
 from torch import nn
 
 from solar.analysis.fusion import FusionPlanner
-from solar.analysis.orojenesis import OrojenesisRunner, select_capacity_point
+from solar.analysis.orojenesis import (
+    OrojenesisError,
+    OrojenesisRunner,
+    compose_multi_einsum_curve,
+    compose_multi_einsum_region_curve,
+    find_multi_einsum_chains,
+    find_multi_einsum_regions,
+    multi_einsum_mapper_role,
+    multi_einsum_problem,
+    multi_einsum_region_problem,
+    parse_multi_mapping_records,
+    select_capacity_point,
+)
 from solar.common.types import TensorShapes
 from solar.einsum import EinsumAnalyzer
 from solar.einsum import PyTorchToEinsum
@@ -77,6 +91,71 @@ def _aten(
         },
         "connections": {"inputs": [], "outputs": []},
     }
+
+
+def _matmul(
+    left: str,
+    right: str,
+    output: str,
+    m_size: int,
+    k_size: int,
+    n_size: int,
+) -> dict:
+    return {
+        "type": "matmul",
+        "is_real_einsum": True,
+        "is_einsum_supportable": True,
+        "einsum_equation": "MK,KN->MN",
+        "semantic_op": {
+            "kind": "einsum",
+            "target": "matmul",
+            "equation": "MK,KN->MN",
+            "arguments": [{"tensor": 0}, {"tensor": 1}],
+            "kwargs": {},
+            "effects": {
+                "mutates": [],
+                "aliases": [],
+                "atomic": False,
+                "opaque_library_call": False,
+            },
+        },
+        "tensor_names": {"inputs": [left, right], "outputs": [output]},
+        "tensor_shapes": {
+            "inputs": [[m_size, k_size], [k_size, n_size]],
+            "outputs": [[m_size, n_size]],
+        },
+        "tensor_dtypes": {
+            "inputs": ["torch.float32", "torch.float32"],
+            "outputs": ["torch.float32"],
+        },
+        "connections": {"inputs": [], "outputs": []},
+    }
+
+
+def _mapping_row(
+    *,
+    buffer_bytes: int,
+    mapping: str,
+    weight_util: int,
+    input_util: int,
+    output_util: int,
+    weight_accesses: int,
+    input_accesses: int,
+    output_accesses: int,
+) -> str:
+    row: list[object] = [0] * 24
+    row[0] = buffer_bytes
+    row[1] = 1
+    row[2] = weight_accesses + input_accesses + output_accesses
+    row[3] = mapping
+    row[5] = 1
+    row[6] = weight_util
+    row[10] = input_util
+    row[11] = output_util
+    row[21] = weight_accesses
+    row[22] = input_accesses
+    row[23] = output_accesses
+    return ",".join(str(value) for value in row) + "\n"
 
 
 def test_executor_uses_explicit_softmax_dim() -> None:
@@ -200,6 +279,322 @@ def test_orojenesis_parser_keeps_pareto_points(tmp_path: Path) -> None:
     assert select_capacity_point(curve, 100)["dram_bytes"] == 160
 
 
+def test_multi_einsum_chain_and_compatible_tile_curve(tmp_path: Path) -> None:
+    assert [multi_einsum_mapper_role(index, 5) for index in range(5)] == [
+        "first",
+        "second",
+        "middle",
+        "middle",
+        "last",
+    ]
+    first_mapper = OrojenesisRunner.multi_mapper_config(2, role="first")
+    second_last_mapper = OrojenesisRunner.multi_mapper_config(2, role="second_last")
+    assert first_mapper["mapspace_constraints"][3] == {
+        "target": "MainMemory",
+        "type": "temporal",
+        "permutation": "KNM",
+    }
+    assert second_last_mapper["mapspace_constraints"][3]["permutation"] == "NKM"
+    assert first_mapper["mapspace_constraints"][4]["permutation"] == "MNK"
+
+    layers = {
+        "start_x": _start("x", [4, 8]),
+        "start_w1": _start("w1", [8, 16]),
+        "start_w2": _start("w2", [16, 2]),
+        "first": _matmul("x", "w1", "hidden", 4, 8, 16),
+        "second": _matmul("hidden", "w2", "output", 4, 16, 2),
+    }
+    layers["first"]["connections"] = {
+        "inputs": ["start_x", "start_w1"],
+        "outputs": ["second"],
+    }
+    layers["second"]["connections"] = {
+        "inputs": ["first", "start_w2"],
+        "outputs": [],
+    }
+    assert find_multi_einsum_chains(layers) == [["first", "second"]]
+    problem = multi_einsum_problem(
+        [(layer_id, layers[layer_id]) for layer_id in ("first", "second")]
+    )
+    assert problem["chain"]["layers"][0]["output"] == "hidden"
+    assert problem["chain"]["layers"][1]["input"] == "hidden"
+    fusion = FusionPlanner(
+        {"schema_version": 3, "layers": layers},
+        multi_einsum_chains=[["first", "second"]],
+    ).plan([])
+    assert fusion["decisions"] == [
+        {
+            "producer": "first",
+            "consumer": "second",
+            "legal": True,
+            "reason": "verified_multi_einsum_chain",
+        }
+    ]
+    assert fusion["regions"][0]["layers"] == ["first", "second"]
+
+    first = tmp_path / "first.csv"
+    second = tmp_path / "second.csv"
+    first.write_text(
+        _mapping_row(
+            buffer_bytes=64,
+            mapping="first-map",
+            weight_util=16,
+            input_util=8,
+            output_util=32,
+            weight_accesses=10,
+            input_accesses=20,
+            output_accesses=30,
+        )
+    )
+    second.write_text(
+        _mapping_row(
+            buffer_bytes=96,
+            mapping="second-map",
+            weight_util=8,
+            input_util=32,
+            output_util=4,
+            weight_accesses=11,
+            input_accesses=30,
+            output_accesses=12,
+        )
+    )
+    curve = compose_multi_einsum_curve([[first], [second]], row_tiles=[1], word_bytes=2)
+    assert curve == [
+        {
+            "buffer_bytes": 160,
+            "operational_intensity": 2 / 106,
+            "dram_accesses_words": 53.0,
+            "dram_bytes": 106.0,
+            "row_tile": 1,
+            "mappings": ["first-map", "second-map"],
+        }
+    ]
+
+    malformed = tmp_path / "malformed.csv"
+    row = first.read_text().split(",")
+    row[2] = str(float(row[2]) + 1)
+    malformed.write_text(",".join(row))
+    with pytest.raises(OrojenesisError, match="access fields disagree"):
+        parse_multi_mapping_records(malformed, word_bytes=2)
+
+    branched = copy.deepcopy(layers)
+    branched["observer"] = _aten("relu", ["hidden"], ["observed"], [[4, 16]], [[4, 16]])
+    assert find_multi_einsum_chains(branched) == []
+
+    mixed_dtype = copy.deepcopy(layers)
+    mixed_dtype["second"]["tensor_dtypes"] = {
+        "inputs": ["torch.bfloat16", "torch.bfloat16"],
+        "outputs": ["torch.bfloat16"],
+    }
+    assert find_multi_einsum_chains(mixed_dtype) == []
+
+    embedded = copy.deepcopy(layers)
+    embedded["observer"] = _aten("relu", ["output"], ["observed"], [[4, 2]], [[4, 2]])
+    assert find_multi_einsum_chains(embedded) == []
+
+
+def _region_einsum(
+    equation: str,
+    input_names: list[str],
+    output_name: str,
+    input_shapes: list[list[int]],
+    output_shape: list[int],
+    *,
+    dtype: str = "torch.float16",
+) -> dict:
+    return {
+        "type": "einsum",
+        "semantic_op": {
+            "kind": "einsum",
+            "target": "einsum",
+            "equation": equation,
+            "arguments": [{"tensor": index} for index in range(len(input_names))],
+            "kwargs": {},
+            "effects": {
+                "mutates": [],
+                "aliases": [],
+                "atomic": False,
+                "opaque_library_call": False,
+            },
+        },
+        "tensor_names": {"inputs": input_names, "outputs": [output_name]},
+        "tensor_shapes": {"inputs": input_shapes, "outputs": [output_shape]},
+        "tensor_dtypes": {
+            "inputs": [dtype] * len(input_names),
+            "outputs": [dtype],
+        },
+        "connections": {"inputs": [], "outputs": []},
+    }
+
+
+def test_extended_multi_einsum_regions_cover_layout_batch_and_fanout(
+    tmp_path: Path,
+) -> None:
+    layout_layers = {
+        "x": _start("x", [4, 8], "torch.float16"),
+        "w1": _start("w1", [16, 8], "torch.float16"),
+        "w2": _start("w2", [16, 2], "torch.float16"),
+        "first": _region_einsum(
+            "MK,NK->MN", ["x", "w1"], "hidden", [[4, 8], [16, 8]], [4, 16]
+        ),
+        "view": _aten(
+            "view",
+            ["hidden"],
+            ["viewed"],
+            [[4, 16]],
+            [[4, 16]],
+            kwargs={"shape": [4, 16]},
+        ),
+        "second": _region_einsum(
+            "MK,KN->MN", ["viewed", "w2"], "output", [[4, 16], [16, 2]], [4, 2]
+        ),
+    }
+    layout_layers["view"]["tensor_dtypes"] = {
+        "inputs": ["torch.float16"],
+        "outputs": ["torch.float16"],
+    }
+    layout_layers["view"]["semantic_op"]["effects"]["aliases"] = [
+        {"output": 0, "input": 0, "conditional": False}
+    ]
+    layout_layers["first"]["connections"] = {
+        "inputs": ["x", "w1"],
+        "outputs": ["view"],
+    }
+    layout_layers["view"]["connections"] = {
+        "inputs": ["first"],
+        "outputs": ["second"],
+    }
+    layout_layers["second"]["connections"] = {
+        "inputs": ["view", "w2"],
+        "outputs": [],
+    }
+    regions = find_multi_einsum_regions(layout_layers)
+    assert len(regions) == 1
+    layout = multi_einsum_region_problem(regions[0])
+    assert layout["kind"] == "linear_matmul_with_axis_maps"
+    assert layout["edges"][0]["bridges"] == ["view"]
+    assert layout["edges"][0]["axis_map"] == [0, 1]
+
+    fusion = FusionPlanner(
+        {"schema_version": 3, "layers": layout_layers},
+        multi_einsum_chains=layout["physical_paths"],
+        verified_view_nodes=["view"],
+    ).plan([])
+    assert {"first", "view", "second"}.issubset(set(fusion["regions"][0]["layers"]))
+
+    batch_layers = {
+        "x": _start("x", [2, 4, 8], "torch.float16"),
+        "w1": _start("w1", [8, 16], "torch.float16"),
+        "w2": _start("w2", [16, 2], "torch.float16"),
+        "first": _region_einsum(
+            "BMK,KN->BMN",
+            ["x", "w1"],
+            "hidden",
+            [[2, 4, 8], [8, 16]],
+            [2, 4, 16],
+        ),
+        "view": _aten(
+            "view",
+            ["hidden"],
+            ["viewed"],
+            [[2, 4, 16]],
+            [[8, 16]],
+            kwargs={"shape": [8, 16]},
+        ),
+        "second": _region_einsum(
+            "MK,KN->MN", ["viewed", "w2"], "output", [[8, 16], [16, 2]], [8, 2]
+        ),
+    }
+    batch_layers["view"]["tensor_dtypes"] = {
+        "inputs": ["torch.float16"],
+        "outputs": ["torch.float16"],
+    }
+    batch_layers["view"]["semantic_op"]["effects"]["aliases"] = [
+        {"output": 0, "input": 0, "conditional": False}
+    ]
+    batch = find_multi_einsum_regions(batch_layers)
+    assert len(batch) == 1
+    assert batch[0]["kind"] == "broadcast_batch_linear_matmul"
+    assert batch[0]["nodes"][0]["m"] == 8
+
+    fanout_layers = {
+        "x": _start("x", [4, 8], "torch.float16"),
+        "w0": _start("w0", [8, 16], "torch.float16"),
+        "w1": _start("w1", [16, 2], "torch.float16"),
+        "w2": _start("w2", [16, 3], "torch.float16"),
+        "root": _region_einsum(
+            "MK,KN->MN", ["x", "w0"], "hidden", [[4, 8], [8, 16]], [4, 16]
+        ),
+        "left": _region_einsum(
+            "MK,KN->MN", ["hidden", "w1"], "left_out", [[4, 16], [16, 2]], [4, 2]
+        ),
+        "right": _region_einsum(
+            "MK,KN->MN", ["hidden", "w2"], "right_out", [[4, 16], [16, 3]], [4, 3]
+        ),
+    }
+    fanout = find_multi_einsum_regions(fanout_layers)
+    assert len(fanout) == 1
+    assert fanout[0]["kind"] == "matmul_fanout_tree"
+    assert fanout[0]["schedule"] == ["root", "left", "right"]
+
+    raw_paths: dict[str, list[Path]] = {}
+    row_tiles: dict[str, list[int]] = {}
+    for index, node in enumerate(fanout[0]["nodes"]):
+        node_id = node["id"]
+        path = tmp_path / f"{node_id}.csv"
+        path.write_text(
+            _mapping_row(
+                buffer_bytes=64 + index,
+                mapping=f"{node_id}-map",
+                weight_util=int(node["k"]) * int(node["n"]) * 2,
+                input_util=int(node["k"]) * 2,
+                output_util=int(node["n"]) * 2,
+                weight_accesses=10 + index,
+                input_accesses=20,
+                output_accesses=30 + index,
+            )
+        )
+        raw_paths[node_id] = [path]
+        row_tiles[node_id] = [1]
+    curve = compose_multi_einsum_region_curve(
+        fanout[0], raw_paths, row_tiles_by_node=row_tiles, word_bytes=2
+    )
+    assert curve[0]["mappings"] == ["root-map", "left-map", "right-map"]
+    assert curve[0]["dram_accesses_words"] == 10 + 20 + 11 + 31 + 12 + 32
+
+    conditional = copy.deepcopy(layout_layers)
+    conditional["view"]["semantic_op"]["effects"]["aliases"][0]["conditional"] = True
+    assert find_multi_einsum_regions(conditional) == []
+
+    missing_alias = copy.deepcopy(layout_layers)
+    missing_alias["view"]["semantic_op"]["effects"]["aliases"] = []
+    assert find_multi_einsum_regions(missing_alias) == []
+
+    transposed = copy.deepcopy(layout_layers)
+    transposed["view"] = _aten(
+        "transpose",
+        ["hidden"],
+        ["viewed"],
+        [[4, 16]],
+        [[16, 4]],
+        arguments=[{"tensor": 0}, {"value": 0}, {"value": 1}],
+    )
+    transposed["view"]["tensor_dtypes"] = {
+        "inputs": ["torch.float16"],
+        "outputs": ["torch.float16"],
+    }
+    transposed["view"]["semantic_op"]["effects"]["aliases"] = [
+        {"output": 0, "input": 0, "conditional": False}
+    ]
+    transposed["second"] = _region_einsum(
+        "MK,KN->MN", ["viewed", "w2"], "output", [[16, 4], [4, 2]], [16, 2]
+    )
+    transposed["w2"] = _start("w2", [4, 2], "torch.float16")
+    transpose_regions = find_multi_einsum_regions(transposed)
+    assert len(transpose_regions) == 1
+    assert transpose_regions[0]["edges"][0]["axis_map"] == [1, 0]
+
+
 def test_strict_trace_preserves_structured_call_semantics(tmp_path: Path) -> None:
     from solar._vendor import torchview
 
@@ -281,6 +676,21 @@ def test_strict_whole_graph_layer_norm_is_executable(tmp_path: Path) -> None:
     torch.testing.assert_close(
         EinsumGraphExecutor(graph)(value, model.weight, model.bias), model(value)
     )
+
+
+def test_variance_dim_overload_is_preserved_and_executable(tmp_path: Path) -> None:
+    class Variance(nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return torch.var(value, dim=-1, keepdim=True, unbiased=False)
+
+    model = Variance()
+    value = torch.randn(3, 5)
+    graph = _strict_graph(model, [value], tmp_path)
+    variance = next(
+        layer for layer in graph["layers"].values() if layer["type"] == "var"
+    )
+    assert variance["semantic_op"]["overload"] == "dim"
+    torch.testing.assert_close(EinsumGraphExecutor(graph)(value), model(value))
 
 
 def test_tensor_t_descriptor_preserves_square_transpose(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 contributors to SOLAR ROCm Port
 # SPDX-License-Identifier: Apache-2.0
 
-schema_version: 1
+schema_version: 2
 source:
   dataset_id: nvidia/SOL-ExecBench
   revision: 63699402f003496acc3af4eb534a5304a8ac1ea9
@@ -16,11 +16,22 @@ target:
   # Updated together with the locked-clock resource audit before publishing.
   architecture_profile_sha256: e415ab14f0992183886d732ad20da06b8346bfb2ef1e88a4de68fd3d02751906
 formal_coverage_requirements:
-  operation: [attention, norm, moe, ssm, conv]
-  dtype: [fp32, bf16, fp8]
-  pass_kind: [forward, backward]
-  dynamic_path: [static_instance, dynamic_shape_small, dynamic_shape_next]
-  input_kind: [random_scalar, random, custom]
+  axes:
+    operation: {attention: 5, norm: 2, moe: 1, ssm: 1, conv: 2, matmul: 3}
+    dtype: {fp32: 3, bf16: 7, fp8: 1, fp16: 3}
+    pass_kind: {forward: 11, backward: 3}
+    dynamic_path: {static_instance: 10, dynamic_shape_small: 2, dynamic_shape_next: 2}
+    input_kind: {random_scalar: 3, random: 10, custom: 1}
+  combinations:
+    - {operation: attention, dtype: fp8, pass: forward, min_count: 1}
+    - {operation: attention, dtype: fp32, pass: backward, min_count: 1}
+    - {operation: norm, dtype: bf16, pass: forward, min_count: 1}
+    - {operation: norm, dtype: bf16, pass: backward, min_count: 1}
+    - {operation: matmul, dtype: fp16, pass: forward, min_count: 3}
+  footprint_classes: {fits_l2: 6, l2_to_llc: 3, exceeds_llc: 2}
+  shape_pairs:
+    - name: fp16_gemm_m_scale
+      slots: [fp16_gemm_m1, fp16_gemm_m8828]
 entries:
   - slot: attention_backward_fp32
     config: L1
@@ -206,3 +217,89 @@ entries:
       flops: 2818572288
       resource_work: {}
       derivation: "2*(B*L)*K*M projection FLOPs; official NVFP4 widths determine storage."
+  - slot: fp16_gemm_m1
+    config: FlashInfer-Bench
+    problem: 004_gemm_n128_k2048
+    workload_uuid: 91e43228-c0a7-457e-9424-1d3461621362
+    official_row_sha256: 17e01ecdee57ee9e92fa43de50e274e3ec3a2eb2a7243d7e7ad13f7f74462a19
+    official_workload_sha256: 9a11e3f3a78133817d8d8b15fae2b62b10d5487034a9146af0cbcc8f76520ebc
+    operation: matmul
+    dtype: fp16
+    pass: forward
+    dynamic_path: dynamic_shape_small
+    input_kind: random
+    golden:
+      external_bytes: 528640
+      flops: 524288
+      resource_work:
+        mfma: {fp16->fp32: 524288}
+      derivation: "For M=1,K=2048,N=128: MFMA/FLOPs=2*M*K*N and bytes=2*(M*K+N*K+M*N)."
+  - slot: fp16_gemm_m8828
+    config: FlashInfer-Bench
+    problem: 004_gemm_n128_k2048
+    workload_uuid: e3fced00-f851-471a-b2a3-d3b1fb632c5b
+    official_row_sha256: 17e01ecdee57ee9e92fa43de50e274e3ec3a2eb2a7243d7e7ad13f7f74462a19
+    official_workload_sha256: b2083e86178099a9d97d0d5ce491d2ea70214a2c74ed839f32277da3624714fc
+    operation: matmul
+    dtype: fp16
+    pass: forward
+    dynamic_path: dynamic_shape_next
+    input_kind: random
+    golden:
+      external_bytes: 38943744
+      flops: 4628414464
+      resource_work:
+        mfma: {fp16->fp32: 4628414464}
+      derivation: "For M=8828,K=2048,N=128: MFMA/FLOPs=2*M*K*N and bytes=2*(M*K+N*K+M*N)."
+  - slot: attention_value_transpose_bf16
+    config: L1
+    problem: 010_attention_value_projection_with_transpose
+    workload_uuid: 67c51f93-ea69-5b99-9614-b9ae0a149f6a
+    official_row_sha256: 502ddb94c48a05526892bba19b113ea7e639ef986acfcc9b307ee1ee919070c3
+    official_workload_sha256: 92a1642efc64dccbc8312bc315610a99cbbc9bee51096de853f049d96d05acf3
+    operation: attention
+    dtype: bf16
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: random
+    golden:
+      external_bytes: 12058624
+      flops: 1342177280
+      resource_work:
+        mfma: {bf16->fp32: 1342177280}
+      derivation: "At B=1,S=128,K=5120,N=8*128: MFMA/FLOPs=2*B*S*K*N; bytes=2*(B*S*K+N*K+B*S*N). The following view/transpose changes layout only."
+  - slot: attention_qkv_reshape_bf16
+    config: L1
+    problem: 050_attention_qkv_projection_with_bias_and_reshape
+    workload_uuid: 2a89c694-cc4f-590b-a3ac-58a2fa977c68
+    official_row_sha256: 9381f1e482ee00acf9f368c6951c9d11b8fbda9e28c46cc9a340006c96e586bd
+    official_workload_sha256: d7b3c8d75bf788b63c5cbb1365188eaf0a57011709696a72ecd168aef786da50
+    operation: attention
+    dtype: bf16
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: random
+    golden:
+      external_bytes: 2539264
+      flops: 257556480
+      resource_work:
+        mfma: {bf16->fp32: 257556480}
+        valu: {bf16: 201216}
+      derivation: "At B=1,S=131,K=640 and Q/K/V widths 1024/256/256: MFMA/FLOPs=2*B*S*K*(1024+256+256), BF16 bias VALU=B*S*(1024+256+256), and bytes include the input, three weights/biases, and three outputs. Views are zero-copy."
+  - slot: whisper_projection_fp16
+    config: L1
+    problem: 077_whisper_decoder_output_projection
+    workload_uuid: f16caebe-a2e8-5550-b7ed-6efb043e1600
+    official_row_sha256: a2c6a68efb4d9283c9c4cf57f34b2469af39c3020333723470bc1c64633daf7c
+    official_workload_sha256: 680fd3b0bca9a26eec5476a767e81e332be840d709645bed34be48039710801d
+    operation: matmul
+    dtype: fp16
+    pass: forward
+    dynamic_path: static_instance
+    input_kind: random
+    golden:
+      external_bytes: 132883252
+      flops: 132776960
+      resource_work:
+        mfma: {fp16->fp32: 132776960}
+      derivation: "At B=S=1,K=1280,N=51866: MFMA/FLOPs=2*B*S*K*N and bytes=2*(B*S*K+N*K+B*S*N)."

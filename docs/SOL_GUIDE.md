@@ -144,9 +144,15 @@ fused_prefetched_bytes = io_lower_bound_bytes
 ```
 
 The maximum excess is composable without assuming independent regions cannot
-share cache residency. Exact einsums whose operands come from internal
-non-alias producers require a multi-einsum proof and are marked non-applicable;
-formal scoring fails if no solver layer is safely composable.
+share cache residency. Canonical endpoint-to-endpoint linear MatMul chains and
+proven extended MatMul regions use the pinned Orojenesis fusion-friendly
+mapping (FFMT) sweep. Adjacent mappings must expose tile shapes that match
+directly or through an exact axis map. Extended regions admit only
+unconditional zero-copy layout bridges, shared-weight broadcast-batch
+flattening, and endpoint-complete fanout trees. The joint point charges
+graph-external inputs, all weights, final outputs, and the sum of mapping buffer
+requirements. Other internal-producer einsums remain non-applicable; formal
+scoring fails if no solver proof is safely composable.
 
 ### Roofline Application ([`perf_model.py`](../solar/perf/perf_model.py))
 ```
@@ -250,11 +256,19 @@ are useful comparisons, but only schema-v3 `fused_prefetched` backed by a
 complete `capacity_constrained_tile_aware_v1` analysis is accepted as a formal
 benchmark denominator.
 
-The current formal composition uses pinned single-einsum OAVES proofs. It does
-not add excess traffic across independent regions and does not approximate an
-einsum fed by a materializing internal producer. Those cases require an
-official multi-einsum solver; until then they are recorded as non-applicable
-and a graph with no applicable proof is rejected from scoring.
+The current formal composition supports pinned single-einsum OAVES proofs and
+pinned multi-einsum FFMT proofs for effect-free, uniform-dtype binary MatMul
+regions whose leaves/weights are graph inputs and whose sinks are graph
+outputs. Besides canonical rank-2 chains, it covers exact zero-copy axis maps,
+shared-weight broadcast batches flattened into M, and MatMul fanout trees. The
+loader rebuilds every problem and mapper, parses every mapping-level raw OAVES
+CSV, reapplies the region schedule and axis maps, reconstructs the joint Pareto
+curve, and reselects the capacity point.
+
+It does not add excess traffic across independent regions. General branched
+DAGs beyond the proven fanout tree, non-MatMul contractions, mixed-dtype chains,
+materializing or conditional-alias preprocessing, and regions with incomplete
+endpoints are still recorded as non-applicable rather than approximated.
 
 
 ## Practical Guidance

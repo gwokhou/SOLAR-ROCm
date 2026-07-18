@@ -206,7 +206,7 @@ def main() -> None:
         coverage = manifest.coverage(results)
         formal_coverage_complete = bool(coverage["formal_requirements_met"])
         report: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source": {
                 "dataset_id": OFFICIAL_DATASET_ID,
                 "revision": OFFICIAL_DATASET_REVISION,
@@ -217,6 +217,7 @@ def main() -> None:
                 "architecture_profile": manifest.architecture_profile_reference,
                 "architecture_profile_sha256": (manifest.architecture_profile_sha256),
                 "architecture_hash": manifest.architecture_hash,
+                "manifest_schema_version": manifest.schema_version,
             },
             "results": results,
             "coverage": coverage,

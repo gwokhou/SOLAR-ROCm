@@ -1,39 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-"""Analysis module for Solar.
+"""Hardware-independent graph, fusion, and Orojenesis analysis APIs."""
 
-This module provides hardware-independent analysis tools for einsum graphs.
+# Public attributes are populated by ``__getattr__`` to keep lightweight mapper
+# contract tests from importing the full graph-analysis dependency tree.
+# pylint: disable=undefined-all-variable
 
-Key components:
-- `EinsumGraphAnalyzer` - Graph-level analysis (MACs, memory, etc.)
-- `ModelAnalyzer` - Model analysis with LLM agent support
+from __future__ import annotations
 
-For einsum conversion, see `solar.einsum`.
-For performance modeling, see `solar.perf`.
-"""
+from importlib import import_module
 
-# Local analysis modules
-from solar.analysis.graph_analyzer import EinsumGraphAnalyzer
-from solar.analysis.model_analyzer import ModelAnalyzer
+_LAZY_IMPORTS = {
+    "EinsumGraphAnalyzer": ("solar.analysis.graph_analyzer", "EinsumGraphAnalyzer"),
+    "ModelAnalyzer": ("solar.analysis.model_analyzer", "ModelAnalyzer"),
+    "FusionPlanner": ("solar.analysis.fusion", "FusionPlanner"),
+    "OrojenesisError": ("solar.analysis.orojenesis", "OrojenesisError"),
+    "OrojenesisRunner": ("solar.analysis.orojenesis", "OrojenesisRunner"),
+}
 
-__all__ = [
-    "EinsumGraphAnalyzer",
-    "ModelAnalyzer",
-]
-from solar.analysis.fusion import FusionPlanner
-from solar.analysis.orojenesis import OrojenesisError, OrojenesisRunner
 
-__all__ = ["FusionPlanner", "OrojenesisError", "OrojenesisRunner"]
+def __getattr__(name: str):
+    if name not in _LAZY_IMPORTS:
+        raise AttributeError(name)
+    module_name, attribute = _LAZY_IMPORTS[name]
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_LAZY_IMPORTS)

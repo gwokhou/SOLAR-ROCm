@@ -179,7 +179,7 @@ Produced by `solar.analysis.graph_analyzer`.
 | `source_graph` | `str` | Path to the einsum graph that was analyzed |
 | `source_graph_sha256` | `str` | Hash of the exact source graph |
 | `fusion` | `dict \| null` | Edge legality decisions, regions, liveness, and hierarchy pressure |
-| `orojenesis` | `dict` | Pinned solver identity, evidence files, curve, selected point and coverage |
+| `orojenesis` | `dict` | Hash-bound mapper toolchain provenance plus pinned single-layer, canonical-chain, and extended-region problem/mapper/raw mapping evidence, selected points and coverage |
 | `architecture` | `dict \| null` | Architecture profile used for the formal bound |
 | `resource_model` | `dict` | Version, modeled/exempt/unclassified coverage, and fail-closed state |
 | `bound_kind` | `str` | `capacity_constrained_tile_aware_v1` or `diagnostic` |

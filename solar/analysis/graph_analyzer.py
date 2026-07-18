@@ -31,8 +31,9 @@ Memory access models (elements are diagnostic; byte totals use each tensor dtype
 
 Formal schema-v3 analysis also emits conservative fusion regions, hierarchy
 capacity pressure, the pinned solver inputs/raw curve and their SHA-256 hashes,
-and separate compute/memory overlap components.  Unsupported multi-einsum
-composition is never approximated into a scored bound.
+and separate compute/memory overlap components. Verified canonical and extended
+MatMul regions use pinned multi-einsum FFMT evidence; unsupported composition
+is never approximated into a scored bound.
 
 Note: input_elements includes all inputs to an operation (including weights/biases).
 Weights are treated as inputs since they are just another operand to the computation.
@@ -59,7 +60,12 @@ from solar.einsum.semantics import (
     validate_semantic_graph,
 )
 from solar.analysis.fusion import FusionPlanner
-from solar.analysis.orojenesis import OrojenesisRunner, select_capacity_point
+from solar.analysis.orojenesis import (
+    OrojenesisRunner,
+    find_multi_einsum_chains,
+    find_multi_einsum_regions,
+    select_capacity_point,
+)
 from solar.analysis.resources import (
     RESOURCE_MODEL_VERSION,
     classify_layer_resources,
@@ -383,7 +389,9 @@ class EinsumGraphAnalyzer:
             print(f"Debug: Filtered out {len(start_node_ids)} start nodes")
             if bool_start_node_ids:
                 print(
-                    f"Debug: Found {len(bool_start_node_ids)} bool-typed start nodes: {bool_start_node_ids}"
+                    "Debug: Found "
+                    f"{len(bool_start_node_ids)} bool-typed start nodes: "
+                    f"{bool_start_node_ids}"
                 )
             print(f"Debug: Analyzing {len(layers_in)} computation nodes")
 
@@ -566,7 +574,9 @@ class EinsumGraphAnalyzer:
 
             if self.debug and _bool_layers:
                 print(
-                    f"Debug: Skipping memory for {len(_bool_layers)} bool-derived layers: {sorted(_bool_layers)}"
+                    "Debug: Skipping memory for "
+                    f"{len(_bool_layers)} bool-derived layers: "
+                    f"{sorted(_bool_layers)}"
                 )
 
         # Detect orphaned subgraphs: chains rooted at tensors created
@@ -1183,8 +1193,12 @@ class EinsumGraphAnalyzer:
 
         fusion: dict[str, Any] | None = None
         orojenesis: dict[str, Any] = {
+            "schema_version": 2,
             "status": "not_applicable" if not semantic_graph else "not_requested",
+            "toolchain": None,
             "layers": {},
+            "chains": {},
+            "regions": {},
         }
         audited_fused_bytes = total_fused_bytes
         audited_prefetched_bytes = total_fused_bytes
@@ -1192,7 +1206,30 @@ class EinsumGraphAnalyzer:
         lower_bound_components: dict[str, Any] | None = None
         if semantic_graph and semantic_complete:
             hierarchy = profile.memory_hierarchy if profile is not None else ()
-            fusion = FusionPlanner(graph).plan(hierarchy)
+            multi_einsum_chains = find_multi_einsum_chains(all_layers)
+            multi_einsum_regions = find_multi_einsum_regions(all_layers)
+            region_paths = [
+                path
+                for region in multi_einsum_regions
+                for path in region.get("physical_paths") or []
+            ]
+            verified_view_nodes = {
+                layer_id
+                for region in multi_einsum_regions
+                for path in region.get("physical_paths") or []
+                for layer_id in path
+                if str(
+                    (all_layers.get(str(layer_id), {}).get("semantic_op") or {}).get(
+                        "target", ""
+                    )
+                )
+                in {"view", "transpose", "permute", "squeeze", "unsqueeze"}
+            }
+            fusion = FusionPlanner(
+                graph,
+                multi_einsum_chains=[*multi_einsum_chains, *region_paths],
+                verified_view_nodes=sorted(verified_view_nodes),
+            ).plan(hierarchy)
             # The compulsory HBM lower bound is graph external I/O.  Region
             # boundaries and on-chip capacity pressure are not automatically
             # HBM traffic because values may remain in another cache level.
@@ -1210,6 +1247,13 @@ class EinsumGraphAnalyzer:
                 )
             if orojenesis_runner is not None and einsum_layers:
                 orojenesis["status"] = "complete"
+                orojenesis["toolchain"] = getattr(
+                    orojenesis_runner, "toolchain_identity", None
+                )
+                if orojenesis["toolchain"] is None and require_orojenesis:
+                    raise ValueError(
+                        "strict formal analysis requires Orojenesis toolchain identity"
+                    )
                 last_cache = None
                 if profile is not None:
                     known = [
@@ -1222,7 +1266,110 @@ class EinsumGraphAnalyzer:
                         key=lambda level: int(level.capacity_bytes or 0),
                         default=None,
                     )
+                multi_member_ids = {
+                    layer_id for chain in multi_einsum_chains for layer_id in chain
+                }
+                multi_member_ids.update(
+                    str(layer_id)
+                    for region in multi_einsum_regions
+                    for layer_id in region.get("schedule") or []
+                )
+                for chain_index, chain_ids in enumerate(multi_einsum_chains):
+                    chain_layers = [
+                        (layer_id, einsum_layers[layer_id]) for layer_id in chain_ids
+                    ]
+                    chain_dtypes = [
+                        str(dtype)
+                        for _, layer in chain_layers
+                        for side in ("inputs", "outputs")
+                        for dtype in (
+                            (layer.get("tensor_dtypes") or {}).get(side) or []
+                        )
+                    ]
+                    bits = min(
+                        (int(dtype_bytes(dtype) * 8) for dtype in chain_dtypes),
+                        default=int(element_size * 8),
+                    )
+                    chain_id = f"chain_{chain_index}"
+                    result = orojenesis_runner.run_multi_chain(
+                        chain_layers,
+                        out_dir / "orojenesis" / "chains" / chain_id,
+                        word_bits=bits,
+                    )
+                    if last_cache is not None:
+                        point = select_capacity_point(
+                            result["curve"], int(last_cache.capacity_bytes or 0)
+                        )
+                        if point is None and require_orojenesis:
+                            raise ValueError(
+                                "multi-einsum Orojenesis produced no point within "
+                                f"{last_cache.name} capacity for {chain_id}"
+                            )
+                        result["selected_capacity"] = {
+                            "level": last_cache.name,
+                            "capacity_bytes": last_cache.capacity_bytes,
+                            "point": point,
+                        }
+                    for evidence in result.get("evidence_files", {}).values():
+                        evidence["path"] = str(
+                            Path("orojenesis")
+                            / "chains"
+                            / chain_id
+                            / str(evidence["path"])
+                        )
+                    orojenesis["chains"][chain_id] = result
+
+                for region_index, region_problem in enumerate(multi_einsum_regions):
+                    region_id = f"region_{region_index}"
+                    region_layer_ids = [
+                        str(item) for item in region_problem.get("schedule") or []
+                    ]
+                    region_dtypes = [
+                        str(dtype)
+                        for layer_id in region_layer_ids
+                        for side in ("inputs", "outputs")
+                        for dtype in (
+                            (einsum_layers[layer_id].get("tensor_dtypes") or {}).get(
+                                side
+                            )
+                            or []
+                        )
+                    ]
+                    bits = min(
+                        (int(dtype_bytes(dtype) * 8) for dtype in region_dtypes),
+                        default=int(element_size * 8),
+                    )
+                    result = orojenesis_runner.run_multi_region(
+                        region_problem,
+                        out_dir / "orojenesis" / "regions" / region_id,
+                        word_bits=bits,
+                    )
+                    if last_cache is not None:
+                        point = select_capacity_point(
+                            result["curve"], int(last_cache.capacity_bytes or 0)
+                        )
+                        if point is None and require_orojenesis:
+                            raise ValueError(
+                                "multi-einsum region produced no point within "
+                                f"{last_cache.name} capacity for {region_id}"
+                            )
+                        result["selected_capacity"] = {
+                            "level": last_cache.name,
+                            "capacity_bytes": last_cache.capacity_bytes,
+                            "point": point,
+                        }
+                    for evidence in result.get("evidence_files", {}).values():
+                        evidence["path"] = str(
+                            Path("orojenesis")
+                            / "regions"
+                            / region_id
+                            / str(evidence["path"])
+                        )
+                    orojenesis["regions"][region_id] = result
+
                 for layer_id, layer in einsum_layers.items():
+                    if layer_id in multi_member_ids:
+                        continue
                     tensor_dtypes = layer.get("tensor_dtypes") or {}
                     dtypes = [
                         *(tensor_dtypes.get("inputs") or []),
@@ -1261,10 +1408,8 @@ class EinsumGraphAnalyzer:
             elif not einsum_layers:
                 orojenesis["status"] = "not_applicable"
 
-            # Consume solver traffic only when the single-einsum proof is
-            # applicable to a complete graph endpoint region.  More complex
-            # producer/consumer fusion requires the official multi-einsum
-            # solver and is rejected in formal mode instead of approximated.
+            # Consume solver traffic only when a single-einsum endpoint proof
+            # or a verified multi-einsum FFMT chain proof is applicable.
             if einsum_layers and orojenesis["status"] == "complete":
                 region_by_layer = {
                     layer_id: region
@@ -1272,8 +1417,8 @@ class EinsumGraphAnalyzer:
                     for layer_id in region["layers"]
                 }
                 solver_excesses: list[float] = []
-                for layer_id, layer in einsum_layers.items():
-                    result = orojenesis["layers"][layer_id]
+                for layer_id, result in orojenesis["layers"].items():
+                    layer = einsum_layers[layer_id]
                     point = (result.get("selected_capacity") or {}).get("point")
                     region = region_by_layer[layer_id]
                     graph_input_contraction = contraction_operands_are_graph_external(
@@ -1315,6 +1460,102 @@ class EinsumGraphAnalyzer:
                     result["audited_dram_bytes"] = solver_bytes
                     result["modeled_compulsory_bytes"] = compulsory_bytes
                     solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+
+                for chain_id, result in orojenesis["chains"].items():
+                    point = (result.get("selected_capacity") or {}).get("point")
+                    descriptors = (
+                        (result.get("problem") or {}).get("chain") or {}
+                    ).get("layers") or []
+                    layer_ids = [str(item.get("id")) for item in descriptors]
+                    region_ids = {
+                        str(region_by_layer[layer_id]["id"])
+                        for layer_id in layer_ids
+                        if layer_id in region_by_layer
+                    }
+                    applicable = bool(
+                        point
+                        and len(layer_ids) >= 2
+                        and len(region_ids) == 1
+                        and all(layer_id in einsum_layers for layer_id in layer_ids)
+                    )
+                    result["formal_applicability"] = {
+                        "applicable": applicable,
+                        "region": next(iter(region_ids), None),
+                        "layer_ids": layer_ids,
+                        "operand_provenance": "graph_inputs_and_internal_chain_edges",
+                        "reason": (
+                            "verified_linear_matmul_tiled_fusion"
+                            if applicable
+                            else "multi_einsum_chain_or_region_mismatch"
+                        ),
+                    }
+                    if not applicable:
+                        continue
+                    assert point is not None
+                    word_bytes = int(result["word_bits"]) // 8
+                    first = descriptors[0]
+                    last = descriptors[-1]
+                    compulsory_elements = int(first["m"]) * int(first["k"])
+                    compulsory_elements += sum(
+                        int(item["k"]) * int(item["n"]) for item in descriptors
+                    )
+                    compulsory_elements += int(last["m"]) * int(last["n"])
+                    compulsory_bytes = float(compulsory_elements * word_bytes)
+                    solver_bytes = float(point["dram_bytes"])
+                    result["audited_dram_bytes"] = solver_bytes
+                    result["modeled_compulsory_bytes"] = compulsory_bytes
+                    solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
+
+                for region_id, result in orojenesis["regions"].items():
+                    point = (result.get("selected_capacity") or {}).get("point")
+                    problem = result.get("problem") or {}
+                    descriptors = problem.get("nodes") or []
+                    layer_ids = [str(item.get("id")) for item in descriptors]
+                    region_ids = {
+                        str(region_by_layer[layer_id]["id"])
+                        for layer_id in layer_ids
+                        if layer_id in region_by_layer
+                    }
+                    applicable = bool(
+                        point
+                        and len(layer_ids) >= 2
+                        and len(region_ids) == 1
+                        and all(layer_id in einsum_layers for layer_id in layer_ids)
+                    )
+                    result["formal_applicability"] = {
+                        "applicable": applicable,
+                        "region": next(iter(region_ids), None),
+                        "layer_ids": layer_ids,
+                        "operand_provenance": (
+                            "graph_inputs_and_verified_internal_region_edges"
+                        ),
+                        "reason": (
+                            "verified_matmul_region_tiled_fusion"
+                            if applicable
+                            else "multi_einsum_region_or_fusion_mismatch"
+                        ),
+                    }
+                    if not applicable:
+                        continue
+                    assert point is not None
+                    word_bytes = int(result["word_bits"]) // 8
+                    by_id = {str(item["id"]): item for item in descriptors}
+                    roots = [str(item) for item in problem.get("roots") or []]
+                    leaves = [str(item) for item in problem.get("leaves") or []]
+                    compulsory_elements = sum(
+                        int(by_id[root]["m"]) * int(by_id[root]["k"]) for root in roots
+                    )
+                    compulsory_elements += sum(
+                        int(item["k"]) * int(item["n"]) for item in descriptors
+                    )
+                    compulsory_elements += sum(
+                        int(by_id[leaf]["m"]) * int(by_id[leaf]["n"]) for leaf in leaves
+                    )
+                    compulsory_bytes = float(compulsory_elements * word_bytes)
+                    solver_bytes = float(point["dram_bytes"])
+                    result["audited_dram_bytes"] = solver_bytes
+                    result["modeled_compulsory_bytes"] = compulsory_bytes
+                    solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
                 # A maximum is composable without assuming that independent
                 # region traffic cannot share cache residency.
                 audited_prefetched_bytes = audited_fused_bytes + max(
@@ -1324,13 +1565,33 @@ class EinsumGraphAnalyzer:
                     bool((result.get("formal_applicability") or {}).get("applicable"))
                     for result in orojenesis["layers"].values()
                 )
+                applicable_layers += sum(
+                    len(
+                        (result.get("formal_applicability") or {}).get("layer_ids")
+                        or []
+                    )
+                    for result in orojenesis["chains"].values()
+                    if (result.get("formal_applicability") or {}).get("applicable")
+                )
+                applicable_layers += sum(
+                    len(
+                        (result.get("formal_applicability") or {}).get("layer_ids")
+                        or []
+                    )
+                    for result in orojenesis["regions"].values()
+                    if (result.get("formal_applicability") or {}).get("applicable")
+                )
                 orojenesis["formal_coverage"] = {
                     "applicable_layers": applicable_layers,
-                    "total_layers": len(orojenesis["layers"]),
+                    "total_layers": len(einsum_layers),
                 }
                 formal_bound = bool(solver_excesses) and all(
                     (result.get("selected_capacity") or {}).get("point") is not None
-                    for result in orojenesis["layers"].values()
+                    for result in [
+                        *orojenesis["layers"].values(),
+                        *orojenesis["chains"].values(),
+                        *orojenesis["regions"].values(),
+                    ]
                 )
             elif not einsum_layers:
                 formal_bound = True
@@ -1386,11 +1647,14 @@ class EinsumGraphAnalyzer:
                 "unfused_bytes": total_unfused_bytes,
                 "orojenesis_elements": (
                     None
-                    if not orojenesis["layers"]
+                    if not orojenesis["layers"] and not orojenesis["chains"]
                     else sum(
                         float(layer_result["selected_capacity"]["point"]["dram_bytes"])
                         / element_size
-                        for layer_result in orojenesis["layers"].values()
+                        for layer_result in [
+                            *orojenesis["layers"].values(),
+                            *orojenesis["chains"].values(),
+                        ]
                         if (layer_result.get("selected_capacity") or {}).get("point")
                     )
                 ),

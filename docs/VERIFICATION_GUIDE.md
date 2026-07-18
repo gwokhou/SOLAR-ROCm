@@ -71,8 +71,11 @@ binding, then reruns the exact recorded cases on the recorded CPU or ROCm
 device. Analysis is independently rerun from the same graph; the loader also
 recreates the pinned solver inputs, reparses the hash-bound raw curve, and
 rederives its capacity point, formal applicability, I/O/time bound, and AMD
-architecture identity. If any link is absent, stale, unsupported, or
-numerically different, TSOL and SOL Score are withheld.
+architecture identity. For supported MatMul regions it additionally rebuilds
+every FFMT mapper, reparses the per-layer mapping records, reapplies exact axis
+maps/batch/fanout schedules, and recomposes the joint curve. If any link is
+absent, stale, unsupported, or numerically different, TSOL and SOL Score are
+withheld.
 
 Create or refresh all attestations after changing a reference, graph, or
 workload parameters:
@@ -92,7 +95,9 @@ handlers are only cached after the built-in verifier compares their executable
 subgraph against the resolved PyTorch operation on independent random, zero,
 and boundary inputs. Formal analysis additionally requires the pinned
 Orojenesis toolchain and at least one safely composable tile-aware proof when
-the graph contains exact einsums.
+the graph contains exact einsums. Supported canonical chains, zero-copy layout
+bridges, broadcast-batch flattening, and fanout trees use a multi-einsum FFMT
+proof; unsupported regions remain fail-closed.
 
 For official graphs, the loader independently rederives not only FLOPs and
 external bytes but also `resource_work`, per-resource time, the bottleneck
@@ -131,13 +136,17 @@ solar-audit-sol-execbench-corpus \
   --output /tmp/official-corpus-audit.yaml
 ```
 
-The aggregate corpus gate requires operation-family, precision,
-forward/backward, dynamic-shape, and structured-input coverage. It does not
+The aggregate corpus gate requires per-axis minimums, critical cross-axis
+combinations, cache-footprint classes, and fixed-shape pairs. It does not
 claim that every operation supports every pass or dtype. Unsupported AMD
 libraries/formats and deterministic OOMs are recorded without a fallback. The
-checked RX 9060 XT report contains nine formally attested compatible workloads,
-including OCP FP8, one explicit NVFP4 incompatibility, empty missing-coverage
-lists, and `gate.passed: true`.
+checked RX 9060 XT report contains fourteen formally attested compatible
+workloads, including OCP FP8, one explicit NVFP4 incompatibility, empty
+missing-coverage lists, and `gate.passed: true`.
+
+The repository-local `configs/corpus/RX_9060_XT_CONFORMANCE.yaml` separately
+binds synthetic accept/reject regression cases. It is not upstream evidence and
+cannot increase the official denominator.
 
 ## Executable ROCm correctness
 

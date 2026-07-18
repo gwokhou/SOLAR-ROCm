@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 import yaml
 
+from solar.common.constants import normalize_dtype
+
 _PRECISION_ALIASES = {
     "float32": "fp32",
     "float16": "fp16",
@@ -19,6 +21,17 @@ _PRECISION_ALIASES = {
     "bfloat16": "bf16",
     "float8": "fp8",
 }
+
+_VENDOR_SPECIFIC_DTYPES = frozenset(
+    {
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
+        "float4_e2m1",
+        "float4_e2m1fn_x2",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,8 @@ class ArchitectureProfile:
     resource_model_version: str = ""
     resource_limits: dict[str, dict[str, float]] = field(default_factory=dict)
     resource_limit_sources: dict[str, str] = field(default_factory=dict)
+    calibration_exempt_modes: dict[str, dict[str, str]] = field(default_factory=dict)
+    precision_support: dict[str, dict[str, Any]] = field(default_factory=dict)
     profile_revision: str = ""
     audit_evidence: dict[str, Any] = field(default_factory=dict)
     precision_aliases: dict[str, str] = field(default_factory=dict)
@@ -122,6 +137,19 @@ class ArchitectureProfile:
                 str(key).lower(): str(value)
                 for key, value in (data.get("resource_limit_sources") or {}).items()
             },
+            calibration_exempt_modes={
+                str(resource_name).lower(): {
+                    str(mode).lower(): str(reason)
+                    for mode, reason in (modes or {}).items()
+                }
+                for resource_name, modes in (
+                    data.get("calibration_exempt_modes") or {}
+                ).items()
+            },
+            precision_support={
+                str(precision).lower(): dict(support or {})
+                for precision, support in (data.get("precision_support") or {}).items()
+            },
             profile_revision=str(data.get("profile_revision", "")),
             audit_evidence=dict(data.get("audit_evidence") or {}),
             precision_aliases={
@@ -179,6 +207,47 @@ class ArchitectureProfile:
                 raise ValueError(
                     f"resource limit source is required for {resource_name}"
                 )
+        for resource_name, exempt_modes in self.calibration_exempt_modes.items():
+            if resource_name not in self.resource_limits:
+                raise ValueError(
+                    f"calibration exemption has unknown resource {resource_name}"
+                )
+            for mode, reason in exempt_modes.items():
+                if mode not in self.resource_limits[resource_name] or not reason:
+                    raise ValueError(
+                        "calibration exemptions require a declared mode and reason"
+                    )
+        if set(self.precision_support) != set(self.peak_ops_per_second):
+            missing = sorted(
+                set(self.peak_ops_per_second) - set(self.precision_support)
+            )
+            extra = sorted(set(self.precision_support) - set(self.peak_ops_per_second))
+            raise ValueError(
+                "precision_support must describe every published peak precision; "
+                f"missing={missing}, extra={extra}"
+            )
+        for precision, support in self.precision_support.items():
+            required_fields = {"hardware", "software", "calibration", "evidence"}
+            if not required_fields.issubset(support):
+                raise ValueError(
+                    f"precision_support.{precision} must define "
+                    f"{sorted(required_fields)}"
+                )
+            if support["calibration"] not in {"required", "exempt"}:
+                raise ValueError(
+                    f"precision_support.{precision}.calibration must be required or exempt"
+                )
+            if not all(str(support[field]).strip() for field in required_fields):
+                raise ValueError(
+                    f"precision_support.{precision} fields must be non-empty"
+                )
+            if (
+                support["calibration"] == "exempt"
+                and not str(support.get("limitation", "")).strip()
+            ):
+                raise ValueError(
+                    f"precision_support.{precision} exemption requires a limitation"
+                )
         if not self.profile_revision:
             raise ValueError("architecture profile_revision is required")
         evidence_sha = str(self.audit_evidence.get("sha256", ""))
@@ -214,6 +283,20 @@ class ArchitectureProfile:
         """Resolve spelling and vendor-specific format aliases."""
         key = _PRECISION_ALIASES.get(precision.lower(), precision.lower())
         return self.precision_aliases.get(key, key)
+
+    def tensor_precision(self, dtype: object, fallback: str | None = None) -> str:
+        """Resolve a tensor dtype without merging incompatible vendor formats."""
+        key = str(dtype or "").strip().lower()
+        if key.startswith("torch."):
+            key = key[6:]
+        if key in _VENDOR_SPECIFIC_DTYPES:
+            precision = self.normalize_precision(key)
+            if precision == key or precision not in self.peak_ops_per_second:
+                raise ValueError(
+                    f"Tensor dtype {key!r} is not supported by {self.name}"
+                )
+            return precision
+        return normalize_dtype(key, fallback)
 
     def theoretical_seconds(
         self, flops: float, fused_bytes: float, precision: str
@@ -302,6 +385,14 @@ class ArchitectureProfile:
                 for resource, modes in self.resource_limits.items()
             },
             "resource_limit_sources": dict(self.resource_limit_sources),
+            "calibration_exempt_modes": {
+                resource: dict(modes)
+                for resource, modes in self.calibration_exempt_modes.items()
+            },
+            "precision_support": {
+                precision: dict(support)
+                for precision, support in self.precision_support.items()
+            },
             "profile_revision": self.profile_revision,
             "audit_evidence": dict(self.audit_evidence),
             "precision_aliases": dict(self.precision_aliases),

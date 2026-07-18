@@ -40,6 +40,10 @@ class CalibrationArtifact:
     measured_throughput_per_second: dict[str, float]
     upper_bound_per_second: dict[str, float]
     upper_bound_ratio: dict[str, float]
+    required_resource_modes: tuple[str, ...]
+    measured_resource_modes: tuple[str, ...]
+    exempt_resource_modes: dict[str, str]
+    precision_support: dict[str, dict[str, Any]]
     timing_ms: dict[str, dict[str, Any]]
     probe_source_sha256: str | None
     calibrator_source_sha256: str
@@ -93,12 +97,27 @@ class RocmCalibrator:
             raise ValueError(
                 "calibration tolerance_ratio must be finite and non-negative"
             )
-        required = set(self.architecture.resource_limits) | {"memory"}
-        present = {probe.resource for probe in operations.values()}
-        if policy.publishable and present != required:
+        required_resources = set(self.architecture.resource_limits) | {"memory"}
+        present_resources = {probe.resource for probe in operations.values()}
+        exempt_modes = {
+            f"{resource}:{mode}": reason
+            for resource, modes in self.architecture.calibration_exempt_modes.items()
+            for mode, reason in modes.items()
+        }
+        required_modes = {
+            (resource, mode)
+            for resource, modes in self.architecture.resource_limits.items()
+            for mode in modes
+            if mode != "generic" and f"{resource}:{mode}" not in exempt_modes
+        }
+        present_modes = {(probe.resource, probe.mode) for probe in operations.values()}
+        missing_resources = required_resources - present_resources
+        missing_modes = required_modes - present_modes
+        if policy.publishable and (missing_resources or missing_modes):
             raise ValueError(
-                "official calibration must cover every resource; "
-                f"missing={sorted(required - present)}, extra={sorted(present - required)}"
+                "official calibration must cover every non-exempt resource mode; "
+                f"missing_resources={sorted(missing_resources)}, "
+                f"missing_modes={sorted(f'{resource}:{mode}' for resource, mode in missing_modes)}"
             )
 
         throughput: dict[str, float] = {}
@@ -134,7 +153,7 @@ class RocmCalibrator:
             "verified" if policy.publishable and clocks_locked else "diagnostic"
         )
         return CalibrationArtifact(
-            schema_version=2,
+            schema_version=3,
             architecture=self.architecture.name,
             profile_revision=self.architecture.profile_revision,
             resource_model_version=RESOURCE_MODEL_VERSION,
@@ -146,6 +165,17 @@ class RocmCalibrator:
             measured_throughput_per_second=throughput,
             upper_bound_per_second=upper_bounds,
             upper_bound_ratio=ratios,
+            required_resource_modes=tuple(
+                sorted(f"{resource}:{mode}" for resource, mode in required_modes)
+            ),
+            measured_resource_modes=tuple(
+                sorted(f"{resource}:{mode}" for resource, mode in present_modes)
+            ),
+            exempt_resource_modes=dict(sorted(exempt_modes.items())),
+            precision_support={
+                precision: dict(support)
+                for precision, support in self.architecture.precision_support.items()
+            },
             timing_ms=timings,
             probe_source_sha256=probe_source_sha256,
             calibrator_source_sha256=hashlib.sha256(

@@ -320,6 +320,26 @@ class AnalysisArtifact:
             expected_applicable = contraction_operands_are_graph_external(layer, layers)
             if bool(applicability.get("applicable")) != expected_applicable:
                 raise ValueError(f"Orojenesis applicability drifted for {layer_id}")
+            expected_provenance = (
+                "graph_input_or_recomputable_preprocess"
+                if expected_applicable
+                else "internal"
+            )
+            expected_reason = (
+                "graph_input_or_recomputable_preprocess_contraction"
+                if expected_applicable
+                else "internal_operand_requires_multi_einsum_composition"
+            )
+            legacy_reason = (
+                "graph_input_contraction" if expected_applicable else expected_reason
+            )
+            if applicability.get("operand_provenance") not in {
+                None,
+                expected_provenance,
+            } or applicability.get("reason") not in {expected_reason, legacy_reason}:
+                raise ValueError(
+                    f"Orojenesis applicability reason drifted for {layer_id}"
+                )
             region = region_by_layer.get(layer_id)
             if region is None or applicability.get("region") != region.get("id"):
                 raise ValueError(f"Orojenesis fusion region mismatch for {layer_id}")
@@ -351,9 +371,7 @@ class AnalysisArtifact:
                         f"Orojenesis compulsory traffic drifted for {layer_id}"
                     )
                 solver_excesses.append(max(0.0, solver_bytes - compulsory_bytes))
-            elif applicability.get("reason") != (
-                "internal_operand_requires_multi_einsum_composition"
-            ):
+            elif applicability.get("reason") != expected_reason:
                 raise ValueError(f"invalid Orojenesis applicability for {layer_id}")
 
         expected_io_bytes = fused_bytes + max(solver_excesses, default=0.0)

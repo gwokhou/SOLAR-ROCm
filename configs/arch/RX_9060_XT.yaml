@@ -4,7 +4,7 @@
 name: Radeon_RX_9060_XT
 vendor: AMD
 gfx_target: gfx1200
-profile_revision: rx9060xt-amd-resource-v1
+profile_revision: rx9060xt-amd-resource-v2
 compute_units: 32
 memory_capacity_bytes: 17179869184
 memory_bandwidth_bytes_per_second: 320000000000
@@ -79,17 +79,53 @@ resource_limit_sources:
   atomic: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
   scan_sort: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
   conversion: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+calibration_exempt_modes:
+  mfma:
+    "int4->int32": RDNA4 ISA defines IU4 WMMA, but ROCm 7.2 rocWMMA lists no INT4 type and PyTorch 2.11 exposes no validated gfx1200 INT4 matrix API; published peak remains source-only
+precision_support:
+  fp32:
+    hardware: native
+    software: pytorch_production
+    calibration: required
+    evidence: https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2/docs/compatibility/compatibilityrad/native_linux/native_linux_compatibility.html
+  fp16:
+    hardware: native_wmma
+    software: pytorch_production
+    calibration: required
+    evidence: https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2/docs/compatibility/compatibilityrad/native_linux/native_linux_compatibility.html
+  bf16:
+    hardware: native_wmma
+    software: rocwmma_supported_pytorch_empirical
+    calibration: required
+    evidence: https://rocm.docs.amd.com/projects/rocWMMA/en/docs-7.2.1/API_Reference_Guide.html
+  fp8:
+    hardware: native_wmma_input_only
+    software: rocwmma_supported_pytorch_private_api_validated
+    calibration: required
+    evidence: https://rocm.docs.amd.com/projects/rocWMMA/en/docs-7.2.1/API_Reference_Guide.html
+    formats: [float8_e4m3fn, float8_e5m2]
+  int8:
+    hardware: native_wmma
+    software: pytorch_production_dtype_private_probe
+    calibration: required
+    evidence: https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2/docs/compatibility/compatibilityrad/native_linux/native_linux_compatibility.html
+  int4:
+    hardware: native_wmma
+    software: isa_only_no_validated_rocm_matrix_api
+    calibration: exempt
+    evidence: https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/rdna4-instruction-set-architecture.pdf
+    limitation: ROCm 7.2 rocWMMA exposes no INT4 type and PyTorch 2.11 has no validated gfx1200 INT4 matrix API; the published peak is source-only.
 audit_evidence:
   status: verified
   path: configs/arch/evidence/RX_9060_XT_resource_audit.yaml
-  sha256: ca91342d312ef98c64b60ff081c8a318df4bd896c4f5c190995690c76c0a5522
-  schema_version: 2
+  sha256: 11b8adc226b3b4f0d52830dde6fd112b1b376adffa81f1204514fa8d34114c1b
+  schema_version: 3
   timing_profile: official
   clocks_locked: true
   gfx_target: gfx1200
-# ROCm/PyTorch FNUZ spellings use the generic published FP8 roofline.
-# Non-ROCm FN formats are intentionally not aliased on this AMD profile.
+# RDNA4/gfx1200 implements the OCP E4M3 and E5M2 encodings.  FNUZ is a
+# gfx94x format and must not be scored against this profile.
 precision_aliases:
-  float8_e4m3fnuz: fp8
-  float8_e5m2fnuz: fp8
+  float8_e4m3fn: fp8
+  float8_e5m2: fp8
 source: https://www.amd.com/en/products/specifications/graphics.html

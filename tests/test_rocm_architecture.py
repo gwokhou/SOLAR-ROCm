@@ -43,9 +43,16 @@ def test_rx_9060_xt_profile_and_roofline():
     assert profile.last_level_cache_bytes == 32 * 1024 * 1024
     assert profile.cache_flush_bytes == 32 * 1024 * 1024
     assert profile.peak_for("fp16") == 103e12
-    assert profile.peak_for("float8_e4m3fnuz") == profile.peak_for("fp8")
+    assert profile.peak_for("float8_e4m3fn") == profile.peak_for("fp8")
+    assert profile.peak_for("float8_e5m2") == profile.peak_for("fp8")
+    assert profile.tensor_precision("torch.float8_e4m3fn") == "fp8"
+    assert profile.precision_support["fp32"]["software"] == "pytorch_production"
+    assert profile.precision_support["fp8"]["hardware"] == "native_wmma_input_only"
+    assert profile.precision_support["int4"]["calibration"] == "exempt"
     with pytest.raises(ValueError, match="not supported"):
-        profile.peak_for("float8_e4m3fn")
+        profile.peak_for("float8_e4m3fnuz")
+    with pytest.raises(ValueError, match="not supported"):
+        profile.tensor_precision("torch.float8_e4m3fnuz")
     assert profile.theoretical_seconds(103e12, 0, "fp16") == pytest.approx(1.0)
     assert profile.theoretical_seconds(0, 320e9, "fp16") == pytest.approx(1.0)
 

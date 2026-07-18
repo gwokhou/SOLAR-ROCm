@@ -283,6 +283,22 @@ def test_strict_whole_graph_layer_norm_is_executable(tmp_path: Path) -> None:
     )
 
 
+def test_tensor_t_descriptor_preserves_square_transpose(tmp_path: Path) -> None:
+    class SquareTranspose(nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            return value.T
+
+    model = SquareTranspose()
+    value = torch.arange(16, dtype=torch.float32).reshape(4, 4)
+    graph = _strict_graph(model, [value], tmp_path)
+    transpose = next(
+        layer for layer in graph["layers"].values() if layer["type"] == "__get__"
+    )
+    assert transpose["einsum_equation"] == "AB->BA"
+    assert transpose["semantic_op"]["target"] == "transpose"
+    torch.testing.assert_close(EinsumGraphExecutor(graph)(value), model(value))
+
+
 def test_strict_whole_graph_embedding_is_executable(tmp_path: Path) -> None:
     model = nn.Embedding(17, 4)
     index = torch.tensor([[0, 3, 5], [16, 2, 1]], dtype=torch.int64)

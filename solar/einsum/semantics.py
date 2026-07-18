@@ -202,6 +202,7 @@ def _canonical_target(layer: Mapping[str, Any]) -> str:
         "convtranspose1d": "conv_transpose1d",
         "convtranspose2d": "conv_transpose2d",
         "convtranspose3d": "conv_transpose3d",
+        "__get__": "transpose",
         "__getitem__": "getitem",
         "max": "amax",
         "min": "amin",
@@ -280,9 +281,10 @@ def build_semantic_operation(layer: Mapping[str, Any]) -> dict[str, Any]:
     if target in {"softmax", "log_softmax"} and "dim" not in kwargs:
         raise SemanticGraphError(f"{target} requires an explicit dim")
 
+    raw_layer_type = str(layer.get("type", ""))
     mutating = (
         target in _MUTATING_TARGETS
-        or str(layer.get("type", "")).endswith("_")
+        or (raw_layer_type.endswith("_") and not raw_layer_type.endswith("__"))
         or layer.get("mutates_inputs") is True
     )
     aliases = list(_plain_value(layer.get("aliases") or []))

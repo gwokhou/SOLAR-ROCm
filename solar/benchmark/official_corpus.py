@@ -14,7 +14,8 @@ from typing import Any, Mapping
 import yaml
 
 from solar.analysis.resources import validate_resource_work
-from solar.benchmark.models import BenchmarkSpec
+from solar.benchmark.models import BenchmarkSpec, canonical_hash
+from solar.rocm import ArchitectureProfile
 
 OFFICIAL_DATASET_ID = "nvidia/SOL-ExecBench"
 OFFICIAL_DATASET_REVISION = "63699402f003496acc3af4eb534a5304a8ac1ea9"
@@ -53,6 +54,11 @@ class CorpusEntry:
 class OfficialCorpusManifest:
     path: Path
     parquet_sha256: dict[str, str]
+    architecture_profile_reference: str
+    architecture_profile_path: Path
+    architecture_profile_sha256: str
+    architecture_hash: str
+    formal_coverage_requirements: dict[str, tuple[str, ...]]
     entries: tuple[CorpusEntry, ...]
 
     @classmethod
@@ -70,6 +76,33 @@ class OfficialCorpusManifest:
             str(key): str(value)
             for key, value in (source.get("parquet_sha256") or {}).items()
         }
+        target = data.get("target") or {}
+        relative_profile = Path(str(target.get("architecture_profile", "")))
+        if not str(relative_profile) or relative_profile.is_absolute():
+            raise ValueError("target architecture_profile must be a relative path")
+        architecture_profile_path = (manifest_path.parent / relative_profile).resolve()
+        architecture_profile_sha256 = str(target.get("architecture_profile_sha256", ""))
+        if (
+            not architecture_profile_path.is_file()
+            or _file_sha256(architecture_profile_path) != architecture_profile_sha256
+        ):
+            raise ValueError("target architecture profile identity mismatch")
+        architecture = ArchitectureProfile.load(architecture_profile_path)
+        architecture_identity = architecture.to_dict()
+        architecture_identity.pop("source", None)
+        architecture_hash = canonical_hash(architecture_identity)
+        axes = ("operation", "dtype", "pass_kind", "dynamic_path", "input_kind")
+        raw_requirements = data.get("formal_coverage_requirements") or {}
+        if set(raw_requirements) != set(axes):
+            raise ValueError(
+                "official corpus must declare every formal coverage requirement axis"
+            )
+        formal_coverage_requirements = {
+            axis: tuple(str(item) for item in (raw_requirements.get(axis) or []))
+            for axis in axes
+        }
+        if any(not values for values in formal_coverage_requirements.values()):
+            raise ValueError("formal coverage requirement axes must be non-empty")
         raw_entries = data.get("entries") or []
         if not 10 <= len(raw_entries) <= 15:
             raise ValueError(
@@ -119,7 +152,25 @@ class OfficialCorpusManifest:
             raise ValueError("corpus must cover forward and backward")
         if not {"fp8", "nvfp4"}.issubset({entry.dtype for entry in entries}):
             raise ValueError("corpus must retain official FP8 and NVFP4 cases")
-        return cls(manifest_path, parquet_sha256, tuple(entries))
+        selected = {
+            axis: {str(getattr(entry, axis)) for entry in entries} for axis in axes
+        }
+        for axis, required in formal_coverage_requirements.items():
+            missing = set(required) - selected[axis]
+            if missing:
+                raise ValueError(
+                    f"formal coverage requirements select no {axis}: {sorted(missing)}"
+                )
+        return cls(
+            manifest_path,
+            parquet_sha256,
+            str(relative_profile),
+            architecture_profile_path,
+            architecture_profile_sha256,
+            architecture_hash,
+            formal_coverage_requirements,
+            tuple(entries),
+        )
 
     def materialize(self, dataset_root: str | Path, output_root: str | Path) -> Path:
         """Materialize selected official rows without semantic adaptation."""
@@ -204,10 +255,25 @@ class OfficialCorpusManifest:
                     formal[axis][value] = formal[axis].get(value, 0) + 1
                 else:
                     formal[axis].setdefault(value, 0)
+        missing_requirements = {
+            axis: [
+                value
+                for value in self.formal_coverage_requirements[axis]
+                if formal[axis].get(value, 0) == 0
+            ]
+            for axis in axes
+        }
+        requirements_met = not any(missing_requirements.values())
         return {
             "denominator": len(self.entries),
             "selection": selection,
             "formal_attested": formal,
+            "formal_requirements": {
+                axis: list(values)
+                for axis, values in self.formal_coverage_requirements.items()
+            },
+            "missing_formal_requirements": missing_requirements,
+            "formal_requirements_met": requirements_met,
             "formal_attested_count": sum(
                 bool(result.get("formal_attested")) for result in results.values()
             ),
@@ -215,7 +281,9 @@ class OfficialCorpusManifest:
 
 
 def verify_formal_entry(
-    entry: CorpusEntry, artifact_root: str | Path | None
+    entry: CorpusEntry,
+    artifact_root: str | Path | None,
+    expected_architecture_hash: str | None = None,
 ) -> dict[str, Any]:
     """Load formal artifacts and compare them with the independent golden."""
     if artifact_root is None:
@@ -238,6 +306,16 @@ def verify_formal_entry(
     ):
         return {"formal_attested": False, "formal_reason": "formal_artifacts_missing"}
     analysis = matches[0].analysis
+    if (
+        expected_architecture_hash is not None
+        and analysis.architecture_hash != expected_architecture_hash
+    ):
+        return {
+            "formal_attested": False,
+            "formal_reason": "architecture_profile_mismatch",
+            "analysis_sha256": analysis.sha256,
+            "verification_sha256": matches[0].verification.sha256,
+        }
     golden_ok = (
         analysis.flops == entry.golden_flops
         and analysis.fused_bytes == entry.golden_external_bytes

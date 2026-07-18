@@ -174,7 +174,11 @@ def main() -> None:
                 if not repeatable:
                     compatibility["status"] = "execution_failed"
                     compatibility["reason_code"] = "non_repeatable_runtime_oom"
-            formal = verify_formal_entry(entry, args.artifact_root)
+            formal = verify_formal_entry(
+                entry,
+                args.artifact_root,
+                expected_architecture_hash=manifest.architecture_hash,
+            )
             results[entry.slot] = {
                 "identity": {
                     "config": entry.config,
@@ -199,6 +203,8 @@ def main() -> None:
             or bool(result.get("formal_attested"))
             for result in results.values()
         )
+        coverage = manifest.coverage(results)
+        formal_coverage_complete = bool(coverage["formal_requirements_met"])
         report: dict[str, Any] = {
             "schema_version": 1,
             "source": {
@@ -208,13 +214,17 @@ def main() -> None:
                 "manifest_sha256": hashlib.sha256(
                     Path(args.manifest).read_bytes()
                 ).hexdigest(),
+                "architecture_profile": manifest.architecture_profile_reference,
+                "architecture_profile_sha256": (manifest.architecture_profile_sha256),
+                "architecture_hash": manifest.architecture_hash,
             },
             "results": results,
-            "coverage": manifest.coverage(results),
+            "coverage": coverage,
             "gate": {
                 "terminal_evidence_complete": terminal,
                 "all_compatible_formally_attested": compatible_formal,
-                "passed": terminal and compatible_formal,
+                "formal_coverage_complete": formal_coverage_complete,
+                "passed": (terminal and compatible_formal and formal_coverage_complete),
             },
         }
         Path(args.output).write_text(

@@ -77,6 +77,27 @@ from solar.common.utils import ensure_directory, NoAliasDumper
 
 PathLike = Union[str, Path]
 
+_RECOMPUTABLE_OPERAND_TARGETS = frozenset(
+    {
+        "abs",
+        "amax",
+        "clamp",
+        "contiguous",
+        "detach",
+        "div",
+        "expand",
+        "flatten",
+        "mul",
+        "permute",
+        "reshape",
+        "squeeze",
+        "to",
+        "transpose",
+        "unsqueeze",
+        "view",
+    }
+)
+
 
 def _product(shape: List[int]) -> int:
     out = 1
@@ -85,14 +106,15 @@ def _product(shape: List[int]) -> int:
     return int(out)
 
 
-def contraction_operands_are_graph_external(
+def _contraction_operand_sources(
     layer: dict[str, Any], layers: dict[str, Any]
-) -> bool:
-    """Return whether every contraction operand traces to a graph input.
+) -> list[tuple[set[str], bool, bool]] | None:
+    """Trace operands to external dtypes and validated recomputation paths.
 
-    Unconditional aliasing views are transparent. Conditional aliases such as
-    reshape/contiguous are not, because a formal proof must cover layouts that
-    require materialization.
+    Each tuple is ``(source_dtypes, saw_low_precision_dequant, materialized)``.
+    A materialized preprocessing path is composable only when it contains an
+    exact low-precision dequantization; this keeps ordinary conditional
+    reshape/contiguous paths behind the multi-einsum barrier.
     """
     producers = {
         str(name): (str(layer_id), producer, output_index)
@@ -102,15 +124,18 @@ def contraction_operands_are_graph_external(
         )
     }
 
-    def traces_external(name: str, visited: set[str]) -> bool:
+    def trace(name: str, visited: set[str]) -> tuple[set[str], bool, bool] | None:
         if name in visited:
-            return False
+            return None
         produced = producers.get(name)
         if produced is None:
-            return True
+            return set(), False, False
         _, producer, output_index = produced
         if str(producer.get("type", "")).lower() == "start":
-            return True
+            output_dtypes = (producer.get("tensor_dtypes") or {}).get("outputs") or []
+            if output_index not in range(len(output_dtypes)):
+                return None
+            return {str(output_dtypes[output_index])}, False, False
         semantic = producer.get("semantic_op") or {}
         effects = semantic.get("effects") or {}
         aliases = [
@@ -119,18 +144,83 @@ def contraction_operands_are_graph_external(
             if int(alias.get("output", -1)) == output_index
             and not bool(alias.get("conditional", False))
         ]
-        if len(aliases) != 1:
-            return False
-        input_index = int(aliases[0].get("input", -1))
         input_names = (producer.get("tensor_names") or {}).get("inputs") or []
-        if input_index not in range(len(input_names)):
-            return False
-        return traces_external(str(input_names[input_index]), visited | {name})
+        if len(aliases) == 1:
+            input_index = int(aliases[0].get("input", -1))
+            if input_index not in range(len(input_names)):
+                return None
+            return trace(str(input_names[input_index]), visited | {name})
+        if (
+            semantic.get("kind") != "aten"
+            or semantic.get("target") not in _RECOMPUTABLE_OPERAND_TARGETS
+            or effects.get("mutates")
+            or effects.get("atomic")
+            or effects.get("opaque_library_call")
+            or not input_names
+        ):
+            return None
+        sources: set[str] = set()
+        saw_low_precision_dequant = False
+        materialized = True
+        for input_name in input_names:
+            traced = trace(str(input_name), visited | {name})
+            if traced is None:
+                return None
+            traced_sources, traced_low_precision, traced_materialized = traced
+            sources.update(traced_sources)
+            saw_low_precision_dequant |= traced_low_precision
+            materialized |= traced_materialized
+        if semantic.get("target") == "to":
+            dtypes = producer.get("tensor_dtypes") or {}
+            inputs = [
+                str(item).removeprefix("torch.") for item in dtypes.get("inputs") or []
+            ]
+            outputs = [
+                str(item).removeprefix("torch.") for item in dtypes.get("outputs") or []
+            ]
+            low_precision = {
+                "float8_e4m3fn",
+                "float8_e5m2",
+                "float8_e4m3fnuz",
+                "float8_e5m2fnuz",
+                "int8",
+                "int4",
+            }
+            saw_low_precision_dequant |= bool(
+                inputs
+                and outputs
+                and inputs[0] in low_precision
+                and inputs[0] != outputs[0]
+            )
+        return sources, saw_low_precision_dequant, materialized
 
-    return all(
-        traces_external(str(name), set())
-        for name in (layer.get("tensor_names") or {}).get("inputs") or []
-    )
+    result: list[tuple[set[str], bool, bool]] = []
+    for name in (layer.get("tensor_names") or {}).get("inputs") or []:
+        traced = trace(str(name), set())
+        if traced is None:
+            return None
+        _, saw_low_precision_dequant, materialized = traced
+        if materialized and not saw_low_precision_dequant:
+            return None
+        result.append(traced)
+    return result
+
+
+def contraction_operands_are_graph_external(
+    layer: dict[str, Any], layers: dict[str, Any]
+) -> bool:
+    """Return whether contraction operands are external or safely recomputable."""
+    return _contraction_operand_sources(layer, layers) is not None
+
+
+def contraction_external_source_dtypes(
+    layer: dict[str, Any], layers: dict[str, Any]
+) -> set[str]:
+    """Return graph-input dtypes for a proven recomputable contraction region."""
+    traced = _contraction_operand_sources(layer, layers)
+    if traced is None:
+        return set()
+    return {dtype for sources, _, _ in traced for dtype in sources}
 
 
 class EinsumGraphAnalyzer:
@@ -250,6 +340,26 @@ class EinsumGraphAnalyzer:
 
         fallback_precision = requested_precision
         used_dtype_fallback = False
+        profile: ArchitectureProfile | None = None
+        if isinstance(architecture, ArchitectureProfile):
+            profile = architecture
+        elif architecture is not None:
+            profile = ArchitectureProfile.load(architecture)
+
+        if strict and profile is not None:
+            for layer_id, layer in all_layers.items():
+                layer_tensor_dtypes = layer.get("tensor_dtypes") or {}
+                for dtype in [
+                    *(layer_tensor_dtypes.get("inputs") or []),
+                    *(layer_tensor_dtypes.get("outputs") or []),
+                ]:
+                    try:
+                        profile.tensor_precision(dtype, fallback_precision)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"layer {layer_id} uses an architecture-incompatible "
+                            f"tensor dtype: {dtype}"
+                        ) from exc
 
         # Filter out "start" nodes - they represent model inputs, not computation
         # Keep track of start node IDs for reference
@@ -325,6 +435,60 @@ class EinsumGraphAnalyzer:
             for iname in t_names.get("inputs") or []:
                 if iname in tensor_producers:
                     tensor_consumers.setdefault(iname, set()).add(layer_id)
+
+        quantized_payload_passthrough = {
+            "contiguous",
+            "detach",
+            "expand",
+            "flatten",
+            "permute",
+            "reshape",
+            "squeeze",
+            "transpose",
+            "unsqueeze",
+            "view",
+        }
+
+        def dequantized_payload_precision(
+            tensor_name: str, visited: Set[str] | None = None
+        ) -> str | None:
+            """Trace one contraction payload to an exact low-precision cast."""
+            if profile is None:
+                return None
+            producer_id = tensor_producers.get(tensor_name)
+            if producer_id is None:
+                return None
+            seen = set(visited or ())
+            if producer_id in seen:
+                return None
+            seen.add(producer_id)
+            producer = layers_in[producer_id]
+            semantic = producer.get("semantic_op") or {}
+            target = str(semantic.get("target", ""))
+            names = (producer.get("tensor_names") or {}).get("inputs") or []
+            dtypes = producer.get("tensor_dtypes") or {}
+            input_dtypes = list(dtypes.get("inputs") or [])
+            output_dtypes = list(dtypes.get("outputs") or [])
+            if target == "to" and input_dtypes and output_dtypes:
+                source = profile.tensor_precision(input_dtypes[0], fallback_precision)
+                destination = profile.tensor_precision(
+                    output_dtypes[0], fallback_precision
+                )
+                if source in {"fp8", "int8", "int4"} and source != destination:
+                    return source
+                return None
+            if target in quantized_payload_passthrough and names:
+                return dequantized_payload_precision(str(names[0]), seen)
+            if target == "mul":
+                candidates = {
+                    candidate
+                    for name in names
+                    if (candidate := dequantized_payload_precision(str(name), seen))
+                    is not None
+                }
+                if len(candidates) == 1:
+                    return candidates.pop()
+            return None
 
         # Identify intermediate tensors: produced by one op AND consumed by another
         intermediate_tensors: Set[str] = set()
@@ -771,6 +935,20 @@ class EinsumGraphAnalyzer:
                 if compute_precisions
                 else fallback_precision
             )
+            resource_compute_precision: str | None = None
+            semantic = layer.get("semantic_op") or {}
+            if macs and semantic.get("kind") == "einsum":
+                input_names = list(tensor_names.get("inputs") or [])
+                payload_precisions = [
+                    dequantized_payload_precision(str(name)) for name in input_names
+                ]
+                if (
+                    len(payload_precisions) >= 2
+                    and all(payload_precisions)
+                    and len(set(payload_precisions)) == 1
+                ):
+                    compute_precision = str(payload_precisions[0])
+                    resource_compute_precision = compute_precision
             if macs:
                 macs_by_precision[compute_precision] += int(macs)
 
@@ -779,6 +957,7 @@ class EinsumGraphAnalyzer:
                 macs=int(macs),
                 fallback_precision=fallback_precision,
                 strict=strict,
+                compute_precision=resource_compute_precision,
             )
             if layer_id in _orphaned_layers:
                 layer_resources = {
@@ -1007,16 +1186,11 @@ class EinsumGraphAnalyzer:
             "status": "not_applicable" if not semantic_graph else "not_requested",
             "layers": {},
         }
-        profile: ArchitectureProfile | None = None
         audited_fused_bytes = total_fused_bytes
         audited_prefetched_bytes = total_fused_bytes
         formal_bound = False
         lower_bound_components: dict[str, Any] | None = None
         if semantic_graph and semantic_complete:
-            if isinstance(architecture, ArchitectureProfile):
-                profile = architecture
-            elif architecture is not None:
-                profile = ArchitectureProfile.load(architecture)
             hierarchy = profile.memory_hierarchy if profile is not None else ()
             fusion = FusionPlanner(graph).plan(hierarchy)
             # The compulsory HBM lower bound is graph external I/O.  Region
@@ -1053,6 +1227,7 @@ class EinsumGraphAnalyzer:
                     dtypes = [
                         *(tensor_dtypes.get("inputs") or []),
                         *(tensor_dtypes.get("outputs") or []),
+                        *contraction_external_source_dtypes(layer, all_layers),
                     ]
                     # Timeloop uses one global word width.  The minimum tensor
                     # width is conservative for mixed-dtype equations; using
@@ -1109,8 +1284,13 @@ class EinsumGraphAnalyzer:
                         "applicable": applicable,
                         "region": region["id"],
                         "graph_input_operands": graph_input_contraction,
+                        "operand_provenance": (
+                            "graph_input_or_recomputable_preprocess"
+                            if graph_input_contraction
+                            else "internal"
+                        ),
                         "reason": (
-                            "graph_input_contraction"
+                            "graph_input_or_recomputable_preprocess_contraction"
                             if applicable
                             else "internal_operand_requires_multi_einsum_composition"
                         ),

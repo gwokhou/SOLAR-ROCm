@@ -52,8 +52,8 @@ _DTYPE_BYTES = {
 }
 _AMD_UNSUPPORTED_QUANTIZATION = frozenset(
     {
-        "float8_e4m3fn",
-        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
         "float4_e2m1",
         "float4_e2m1fn_x2",
     }
@@ -559,7 +559,9 @@ class AmdCompatibilityAuditor:
                 stage="reference_semantics",
                 evidence={
                     "dtypes": declared_quant_formats,
-                    "policy": "AMD formats are not substituted for NVIDIA formats",
+                    "policy": (
+                        "non-native quantization formats are not substituted on AMD"
+                    ),
                 },
             )
         cycles = sorted(imports & _FORBIDDEN_CYCLE_IMPORTS)

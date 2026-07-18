@@ -69,6 +69,7 @@ solar-create-baseline = "solar.cli.create_baseline:main"
 solar-verify-source-to-sol = "solar.cli.verify_source_to_sol:main"
 solar-check-sol-execbench = "solar.cli.check_sol_execbench:main"
 solar-build-source-to-sol = "solar.cli.build_source_to_sol:main"
+solar-build-sol-execbench-corpus = "solar.cli.build_official_corpus:main"
 solar-audit-sol-execbench-corpus = "solar.cli.audit_sol_execbench_corpus:main"
 
 [[tool.uv.index]]

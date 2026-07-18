@@ -13,6 +13,7 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from solar.analysis.graph_analyzer import EinsumGraphAnalyzer
 from solar.analysis.resources import (
     RESOURCE_MODEL_VERSION,
     ResourceClassificationError,
@@ -25,8 +26,9 @@ from solar.benchmark.models import (
     WorkloadSpec,
     canonical_hash,
 )
-from solar.benchmark.official_corpus import OfficialCorpusManifest
+from solar.benchmark.official_corpus import OfficialCorpusManifest, verify_formal_entry
 from solar.benchmark.timing import TimingPolicy, TimingStatistics
+from solar.cli.build_official_corpus import problem_build_commands
 from solar.cli.build_source_to_sol import _extract_graph
 from solar.rocm import ArchitectureProfile
 from solar.rocm.environment import Capability, RocmEnvironment
@@ -141,6 +143,133 @@ def test_resource_model_rejects_unknown_compute() -> None:
         classify_layer_resources(layer, macs=0, fallback_precision="fp32", strict=True)
 
 
+def test_degenerate_reduction_is_explicitly_exempt() -> None:
+    layer = _aten_layer(
+        "amax",
+        [[4, 1]],
+        [[4]],
+        ["torch.float32"],
+        ["torch.float32"],
+        kwargs={"dim": {"value": 1}},
+    )
+    result = classify_layer_resources(
+        layer, macs=0, fallback_precision="fp32", strict=True
+    )
+    assert result["classification"] == "exempt"
+    assert result["exemption_reason"] == "degenerate_single_element_reduction"
+
+
+def _dequantized_matmul_graph(dtype: str) -> dict[str, Any]:
+    effects = {
+        "mutates": [],
+        "aliases": [],
+        "atomic": False,
+        "opaque_library_call": False,
+    }
+    layers: dict[str, Any] = {}
+    for name, shape in (("a", [8, 16]), ("b", [16, 8])):
+        layers[f"start_{name}"] = {
+            "type": "start",
+            "is_real_einsum": False,
+            "is_einsum_supportable": True,
+            "tensor_names": {"inputs": [], "outputs": [name]},
+            "tensor_shapes": {"inputs": [], "outputs": [shape]},
+            "tensor_dtypes": {"inputs": [], "outputs": [dtype]},
+            "tensor_types": {"inputs": [], "outputs": ["input"]},
+            "connections": {"inputs": [], "outputs": [f"dequant_{name}"]},
+            "semantic_op": {
+                "kind": "input",
+                "target": "input",
+                "arguments": [],
+                "kwargs": {},
+            },
+        }
+        layers[f"dequant_{name}"] = {
+            "type": "to",
+            "is_real_einsum": False,
+            "is_einsum_supportable": True,
+            "tensor_names": {"inputs": [name], "outputs": [f"{name}_fp32"]},
+            "tensor_shapes": {"inputs": [shape], "outputs": [shape]},
+            "tensor_dtypes": {
+                "inputs": [dtype],
+                "outputs": ["torch.float32"],
+            },
+            "tensor_types": {"inputs": ["input"], "outputs": ["output"]},
+            "connections": {"inputs": [f"start_{name}"], "outputs": ["matmul"]},
+            "semantic_op": {
+                "kind": "aten",
+                "target": "to",
+                "arguments": [{"tensor": 0}],
+                "kwargs": {"dtype": {"dtype": "torch.float32"}},
+                "effects": effects,
+            },
+        }
+    layers["matmul"] = {
+        "type": "matmul",
+        "einsum_equation": "MK,KN->MN",
+        "is_real_einsum": True,
+        "is_einsum_supportable": True,
+        "tensor_names": {
+            "inputs": ["a_fp32", "b_fp32"],
+            "outputs": ["output"],
+        },
+        "tensor_shapes": {
+            "inputs": [[8, 16], [16, 8]],
+            "outputs": [[8, 8]],
+        },
+        "tensor_dtypes": {
+            "inputs": ["torch.float32", "torch.float32"],
+            "outputs": ["torch.float32"],
+        },
+        "tensor_types": {
+            "inputs": ["input", "input"],
+            "outputs": ["output"],
+        },
+        "connections": {"inputs": ["dequant_a", "dequant_b"], "outputs": []},
+        "semantic_op": {
+            "kind": "einsum",
+            "target": "einsum",
+            "equation": "MK,KN->MN",
+            "arguments": [{"tensor": 0}, {"tensor": 1}],
+            "kwargs": {},
+            "effects": effects,
+        },
+    }
+    return {"schema_version": 3, "layers": layers, "outputs": ["output"]}
+
+
+def test_block_scaled_payload_uses_native_ocp_fp8_mfma(tmp_path: Path) -> None:
+    graph_path = tmp_path / "einsum_graph.yaml"
+    graph_path.write_text(
+        yaml.safe_dump(_dequantized_matmul_graph("torch.float8_e4m3fn"))
+    )
+    result = EinsumGraphAnalyzer().analyze_graph(
+        graph_path,
+        tmp_path,
+        strict=True,
+        architecture="RX_9060_XT",
+        copy_graph=False,
+    )
+    assert result is not None
+    assert result["total"]["macs_by_precision"] == {"fp8": 1024}
+    assert result["total"]["resource_work"]["mfma"] == {"fp8->fp32": 2048}
+
+
+def test_formal_gfx1200_analysis_rejects_fnuz_tensor(tmp_path: Path) -> None:
+    graph_path = tmp_path / "einsum_graph.yaml"
+    graph_path.write_text(
+        yaml.safe_dump(_dequantized_matmul_graph("torch.float8_e4m3fnuz"))
+    )
+    with pytest.raises(ValueError, match="architecture-incompatible tensor dtype"):
+        EinsumGraphAnalyzer().analyze_graph(
+            graph_path,
+            tmp_path,
+            strict=True,
+            architecture="RX_9060_XT",
+            copy_graph=False,
+        )
+
+
 def _fake_environment() -> RocmEnvironment:
     return RocmEnvironment(
         rocm_version="7.2",
@@ -179,18 +308,23 @@ def test_official_calibration_is_complete_and_not_diagnostic(monkeypatch) -> Non
 
     monkeypatch.setattr("solar.benchmark.calibration.AdaptiveTimer", FakeTimer)
     profile = ArchitectureProfile.load(_ROOT / "configs/arch/RX_9060_XT.yaml")
+    probe_modes = [
+        ("mfma_fp32", "mfma", "fp32->fp32"),
+        ("mfma_fp16", "mfma", "fp16->fp32"),
+        ("mfma_bf16", "mfma", "bf16->fp32"),
+        ("mfma_fp8", "mfma", "fp8->fp32"),
+        ("mfma_int8", "mfma", "int8->int32"),
+        ("valu", "valu", "fp32"),
+        ("sfu", "sfu", "fp32"),
+        ("reduction", "reduction", "fp32"),
+        ("atomic", "atomic", "fp32"),
+        ("scan_sort", "scan_sort", "fp32"),
+        ("conversion", "conversion", "fp32->fp16"),
+        ("memory", "memory", "hbm"),
+    ]
     probes = {
-        resource: ResourceProbe(lambda: None, 1.0, resource, mode)
-        for resource, mode in {
-            "mfma": "fp32->fp32",
-            "valu": "fp32",
-            "sfu": "fp32",
-            "reduction": "fp32",
-            "atomic": "fp32",
-            "scan_sort": "fp32",
-            "conversion": "fp32->fp16",
-            "memory": "hbm",
-        }.items()
+        name: ResourceProbe(lambda: None, 1.0, resource, mode)
+        for name, resource, mode in probe_modes
     }
     artifact = RocmCalibrator(profile, _fake_environment()).calibrate(
         probes,
@@ -204,7 +338,34 @@ def test_official_calibration_is_complete_and_not_diagnostic(monkeypatch) -> Non
     assert artifact.audit_status == "verified"
     assert artifact.diagnostic_only is False
     assert set(artifact.measured_throughput_per_second) == set(probes)
+    assert "mfma:fp8->fp32" in artifact.required_resource_modes
+    assert "mfma:int8->int32" in artifact.required_resource_modes
+    assert artifact.exempt_resource_modes == {
+        "mfma:int4->int32": (
+            "RDNA4 ISA defines IU4 WMMA, but ROCm 7.2 rocWMMA lists no INT4 "
+            "type and PyTorch 2.11 exposes no validated gfx1200 INT4 matrix "
+            "API; published peak remains source-only"
+        )
+    }
+    assert artifact.precision_support["fp8"]["hardware"] == ("native_wmma_input_only")
+    assert artifact.precision_support["int4"]["calibration"] == "exempt"
     assert len(artifact.calibrator_source_sha256) == 64
+
+
+def test_publishable_calibration_rejects_missing_native_precision_mode() -> None:
+    profile = ArchitectureProfile.load(_ROOT / "configs/arch/RX_9060_XT.yaml")
+    probes = {
+        resource: ResourceProbe(lambda: None, 1.0, resource, "generic")
+        for resource in profile.resource_limits
+    }
+    probes["memory"] = ResourceProbe(lambda: None, 1.0, "memory", "hbm")
+    with pytest.raises(ValueError, match="mfma:fp8->fp32"):
+        RocmCalibrator(profile, _fake_environment()).calibrate(
+            probes,
+            timing_profile="official",
+            clocks_locked=True,
+            clock_levels=("AMDSMI_DEV_PERF_LEVEL_STABLE_PEAK",),
+        )
 
 
 def test_publishable_calibration_requires_locked_clocks() -> None:
@@ -229,6 +390,31 @@ def test_profile_binds_verified_local_resource_evidence() -> None:
     assert evidence["clocks_locked"] is True
     assert evidence["gfx_target"] == profile.gfx_target
     assert evidence["resource_model_version"] == RESOURCE_MODEL_VERSION
+    assert profile.audit_evidence["schema_version"] == 3
+    assert evidence["precision_support"] == profile.precision_support
+    assert set(evidence["required_resource_modes"]).issubset(
+        set(evidence["measured_resource_modes"])
+    )
+    assert set(evidence["required_resource_modes"]) == {
+        "mfma:fp32->fp32",
+        "mfma:fp16->fp32",
+        "mfma:bf16->fp32",
+        "mfma:fp8->fp32",
+        "mfma:int8->int32",
+    }
+    assert "mfma:int4->int32" in evidence["exempt_resource_modes"]
+    assert (
+        evidence["calibrator_source_sha256"]
+        == hashlib.sha256(
+            (_ROOT / "solar/benchmark/calibration.py").read_bytes()
+        ).hexdigest()
+    )
+    assert (
+        evidence["probe_source_sha256"]
+        == hashlib.sha256(
+            (_ROOT / "solar/cli/calibrate_rocm.py").read_bytes()
+        ).hexdigest()
+    )
     assert set(evidence["upper_bound_per_second"]) == set(
         evidence["measured_throughput_per_second"]
     )
@@ -246,21 +432,37 @@ def test_pinned_official_corpus_gate_preserves_incompatibilities() -> None:
 
     assert len(manifest.entries) == 10
     assert (
+        manifest.architecture_profile_path
+        == (_ROOT / "configs/arch/RX_9060_XT.yaml").resolve()
+    )
+    assert len(manifest.architecture_hash) == 64
+    assert (
         report["source"]["manifest_sha256"]
         == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     )
     assert report["gate"] == {
         "terminal_evidence_complete": True,
         "all_compatible_formally_attested": True,
+        "formal_coverage_complete": True,
         "passed": True,
     }
-    assert report["coverage"]["formal_attested_count"] == 8
+    assert report["source"]["architecture_profile_sha256"] == (
+        manifest.architecture_profile_sha256
+    )
+    assert report["source"]["architecture_hash"] == manifest.architecture_hash
+    assert report["coverage"]["formal_attested_count"] == 9
+    assert report["coverage"]["formal_attested"]["dtype"]["fp8"] == 1
+    assert report["coverage"]["formal_requirements_met"] is True
+    assert all(
+        not missing
+        for missing in report["coverage"]["missing_formal_requirements"].values()
+    )
     incompatible = [
         result
         for result in report["results"].values()
         if result["compatibility"]["status"] == "incompatible"
     ]
-    assert len(incompatible) == 2
+    assert len(incompatible) == 1
     assert all(
         result["compatibility"]["reason_code"] == "unsupported_quantization_format"
         for result in incompatible
@@ -268,6 +470,81 @@ def test_pinned_official_corpus_gate_preserves_incompatibilities() -> None:
     assert all(
         result["compatibility"]["fallbacks_used"] == [] for result in incompatible
     )
+
+
+def test_official_corpus_batch_build_is_deterministic_and_profile_bound() -> None:
+    manifest = OfficialCorpusManifest.load(
+        _ROOT / "configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml"
+    )
+    commands = problem_build_commands(
+        manifest,
+        Path("/materialized"),
+        Path("/artifacts"),
+        device="cuda:0",
+        orojenesis_home="/opt/orojenesis",
+        blob_roots=("/blobs",),
+        python_executable="python",
+    )
+
+    assert len(commands) == 9
+    assert (
+        len(
+            [
+                command
+                for command in commands
+                if "L1/040_conv2d_residual_block" in " ".join(command)
+            ]
+        )
+        == 1
+    )
+    assert all(
+        command[command.index("--arch-config") + 1]
+        == str(manifest.architecture_profile_path)
+        for command in commands
+    )
+    assert all("--workload" not in command for command in commands)
+    assert all(command[-2:] == ["--blob-root", "/blobs"] for command in commands)
+
+
+def test_official_corpus_rejects_artifact_from_other_profile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest = OfficialCorpusManifest.load(
+        _ROOT / "configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml"
+    )
+    entry = manifest.entries[0]
+    benchmark_path = tmp_path / entry.config / entry.problem / "benchmark.yaml"
+    benchmark_path.parent.mkdir(parents=True)
+    benchmark_path.write_text("schema_version: 3\n")
+    analysis = SimpleNamespace(
+        architecture_hash="0" * 64,
+        sha256="1" * 64,
+        flops=entry.golden_flops,
+        fused_bytes=entry.golden_external_bytes,
+        resource_work=entry.golden_resource_work,
+    )
+    verification = SimpleNamespace(sha256="2" * 64)
+    benchmark = SimpleNamespace(
+        workloads=[
+            SimpleNamespace(
+                uuid=entry.workload_uuid,
+                analysis=analysis,
+                verification=verification,
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "solar.benchmark.official_corpus.BenchmarkSpec.load", lambda _path: benchmark
+    )
+
+    result = verify_formal_entry(
+        entry,
+        tmp_path,
+        expected_architecture_hash=manifest.architecture_hash,
+    )
+
+    assert result["formal_attested"] is False
+    assert result["formal_reason"] == "architecture_profile_mismatch"
 
 
 def test_compatibility_artifact_rejects_any_fallback(tmp_path: Path) -> None:

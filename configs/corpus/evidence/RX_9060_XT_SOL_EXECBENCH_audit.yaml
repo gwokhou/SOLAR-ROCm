@@ -3,7 +3,10 @@ source:
   dataset_id: nvidia/SOL-ExecBench
   revision: 63699402f003496acc3af4eb534a5304a8ac1ea9
   manifest: configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml
-  manifest_sha256: bc9ec1b5316dee870d1609158897a37fb7b96588f37ad7d6b5c61a97bc8532a9
+  manifest_sha256: 0dfdb91ab6e605025fb00b2ad9140262317fb131fa86c10d4ef82d02300a34fb
+  architecture_profile: ../arch/RX_9060_XT.yaml
+  architecture_profile_sha256: e415ab14f0992183886d732ad20da06b8346bfb2ef1e88a4de68fd3d02751906
+  architecture_hash: 5a134450baa2da540ff161ce77984d1cc9b58cb6fe910866651697463c73cdd3
 results:
   attention_backward_fp32:
     identity:
@@ -73,8 +76,8 @@ results:
       workload_uuid: ff15d496-108e-5529-bd40-3f27afe7cf19
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: e5a0f070d781d99e9400c665b2708c014c73d34cf9c6178e308d8a26d29615dc
-    verification_sha256: 4969d59405d0332f48ad96534555dc00845b608fe8b752b36e6b4da5941290bd
+    analysis_sha256: 4d2374a8f480a66df36ee65977ffb134c64a17974f8c14cbd2a9889d52a548d8
+    verification_sha256: 20d38447c5d9e7c544d65c187b8d9d9a3a1cecb3eb6b06e964272a1457357273
   norm_forward_bf16:
     identity:
       config: L1
@@ -143,8 +146,8 @@ results:
       workload_uuid: b6b63196-7f11-5b0d-969e-33e44f70975f
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: bbd478664580c41ace9ab346f5f4333feae6357ac0ff0643fd101a8b37679d28
-    verification_sha256: 8449106f382d00d36faf458640d5bb7a2a1b1104efe5c786d7921ce77786c990
+    analysis_sha256: 2e2fc22b36eba492463fd117fd6262727b5e9dbfb8c814235d67425f04b01afb
+    verification_sha256: 22ad23565e9c988f160be5730ad6f01fb5397c5819a2fd64dce9438d532a5a9b
   norm_backward_bf16:
     identity:
       config: L1
@@ -213,8 +216,8 @@ results:
       workload_uuid: cf9bd8ed-f80a-54eb-9fc2-9f3d5970f8c1
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 90eead39c5024bd630a835bf48ad63b31c315509018e8f7718a052cd547decec
-    verification_sha256: dea9dcd95321dc3ea09905597c80c5f01c621668f97ac2501a8f15f1ef17ec4a
+    analysis_sha256: 32119cc56987c25b3b292fc4a219aa19f4fde84b0adbc737418d88ca99777e1d
+    verification_sha256: 9020e2cd0e35efca8019a563d264abfc7228d018c6f4c52506591063c9bc8d14
   ssm_backward_bf16:
     identity:
       config: L1
@@ -283,8 +286,8 @@ results:
       workload_uuid: a2e57e4a-476a-5b71-a8f5-e6726ddba86b
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: e9a8a90d8438f3678071a6bb86ac220f605c8b5338987e9f5d322a9a0f73e874
-    verification_sha256: b5744b11c036cc1c3937ab37493503b60aa6dd0fd4d6577981c9224cbd24ad6e
+    analysis_sha256: 9614c91eb690d3ed5d489277a2466df5f75923b93e08075adf0b42fae4fe4670
+    verification_sha256: 7f1741b8561f8bc13db92f8e50aceddc9ca63ce578327cac9634dcdf5aa63d32
   conv_forward_fp32:
     identity:
       config: L1
@@ -352,8 +355,8 @@ results:
       workload_uuid: ca8527b4-8811-5614-9515-e5ba498f168d
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 2448d59cfd6543a1631d5f49fb385f37951f14e4d2854ab0b1f96a32fa3d6789
-    verification_sha256: 166d5082e2b19fe81f0c959e2431e9292ac33ec93cc7b37a6f06f03f7cc6e0ac
+    analysis_sha256: c3068371cc9e9f8a6f36c84b29be701ccdf62530b5baefdcd1d2fb8e5f6ac2f8
+    verification_sha256: b4be198f0652cc38f3c979a01cbb2ca3e8395f6d474b87551c3b7ddd300f073c
   conv_forward_dynamic_next_fp32:
     identity:
       config: L1
@@ -421,8 +424,8 @@ results:
       workload_uuid: 426a537c-9a07-578e-bf40-b45746f82335
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 26ae215855f3cf03ef9f5db86620a486a09127a967bb6e5c17f9cfb148fe9b9f
-    verification_sha256: 24292ca12bfa317331ad55638fc3074ed8ca8976c207addcbdf2784281d7817a
+    analysis_sha256: 5509e0888df8a83de3a81df369baf774e358b09abf245aa19947391f6abe2aa1
+    verification_sha256: c2cebfa6c63d57b637b3888539e8add4ad083fac39c3832a1381f2f703a39e79
   attention_forward_bf16:
     identity:
       config: L1
@@ -490,8 +493,8 @@ results:
       workload_uuid: 9ea9d093-cc9d-5e29-a18b-899d0f60238b
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 09e708acb70c892d43f02073b6c2109d80a9951355d567e27c2e415f9bbfcd25
-    verification_sha256: 525ec19d852d9431f332510e25275d937904a4fbbcea58f1c7c17b8dfa8edb2d
+    analysis_sha256: de99e61070f6d3700724b888b12ea930cd18821396360d8ed04a349191af9655
+    verification_sha256: 8661e8b7928405bf6fb63699ec3d0336de1ed694520932ffc78837d32c05a303
   moe_forward_bf16:
     identity:
       config: L1
@@ -560,8 +563,8 @@ results:
       workload_uuid: 0bda2a65-30fb-51ee-a53d-4506adc7bf9c
     formal_attested: true
     formal_reason: verified
-    analysis_sha256: 3c530bc16b9635c5f5bb1bcf69538a0c1154752b4b99ca29a6aea6c7c65a6b17
-    verification_sha256: fa4f6df531eb1ed76cb46fd53d7d8d3bffa798fc49b537d96bdc7075b84c7955
+    analysis_sha256: 92c46199f37f07702e43f0f455d38c6f7af3b00285f24ed27472a0393fbf0deb
+    verification_sha256: 349e1ce6d713eb9e617b8202aae426020558b9a553b1e62a0a12918585e7f14b
   fp8_block_scale:
     identity:
       config: Quant
@@ -609,19 +612,28 @@ results:
         total_memory_bytes: 17095983104
       evidence:
         dtypes:
-        - float8_e4m3fn
-        policy: AMD formats are not substituted for NVIDIA formats
+        - bfloat16
+        external_inputs: {}
+        minimum_storage_bytes: 125844480
+        selected_device:
+          device_name: AMD Radeon RX 9060 XT
+          gfx_target: gfx1200
+          hip_version: 7.2.26015
+          requested_device: cuda:0
+          resolved_device: cuda:0
       fallbacks_used: []
       problem: 001_fp8_attention_output_projection
-      reason_code: unsupported_quantization_format
+      reason_code: compatible
       schema_version: 2
-      stage: reference_semantics
-      status: incompatible
+      stage: reference_complete
+      status: compatible
       upstream_schema_commit: a9fa0804c793d438e70850c33fe34426e66d53dd
       workload_jsonl_sha256: 18bc5e667f0aba7cdf66b68ea3b9e1946f0d2c4e43cac11288ec09a936f9729f
       workload_uuid: 907370b8-2db6-5fde-aa89-a00ee3e73c1a
-    formal_attested: false
-    formal_reason: benchmark_missing
+    formal_attested: true
+    formal_reason: verified
+    analysis_sha256: 3528a4e90f75ea582fbff2aa8565cb938fb8d7a170386e77bcb7705a61e54f4c
+    verification_sha256: 5cc5a5c698b288f20296269650d6ab2d36c9e1ac3f0251d7f17a87f60d9cd135
   nvfp4_projection:
     identity:
       config: Quant
@@ -671,8 +683,7 @@ results:
         dtypes:
         - float4_e2m1
         - float4_e2m1fn_x2
-        - float8_e4m3fn
-        policy: AMD formats are not substituted for NVIDIA formats
+        policy: non-native quantization formats are not substituted on AMD
       fallbacks_used: []
       problem: 024_nvfp4_attention_output_projection
       reason_code: unsupported_quantization_format
@@ -711,7 +722,7 @@ coverage:
       custom: 2
   formal_attested:
     operation:
-      attention: 2
+      attention: 3
       norm: 2
       ssm: 1
       conv: 2
@@ -719,21 +730,51 @@ coverage:
     dtype:
       fp32: 3
       bf16: 5
-      fp8: 0
+      fp8: 1
       nvfp4: 0
     pass_kind:
       backward: 3
-      forward: 5
+      forward: 6
     dynamic_path:
-      static_instance: 6
+      static_instance: 7
       dynamic_shape_small: 1
       dynamic_shape_next: 1
     input_kind:
       random_scalar: 3
-      random: 4
+      random: 5
       custom: 1
-  formal_attested_count: 8
+  formal_requirements:
+    operation:
+    - attention
+    - norm
+    - moe
+    - ssm
+    - conv
+    dtype:
+    - fp32
+    - bf16
+    - fp8
+    pass_kind:
+    - forward
+    - backward
+    dynamic_path:
+    - static_instance
+    - dynamic_shape_small
+    - dynamic_shape_next
+    input_kind:
+    - random_scalar
+    - random
+    - custom
+  missing_formal_requirements:
+    operation: []
+    dtype: []
+    pass_kind: []
+    dynamic_path: []
+    input_kind: []
+  formal_requirements_met: true
+  formal_attested_count: 9
 gate:
   terminal_evidence_complete: true
   all_compatible_formally_attested: true
+  formal_coverage_complete: true
   passed: true

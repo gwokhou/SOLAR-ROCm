@@ -219,6 +219,8 @@ Produced by `solar.perf.perf_model`.
 | `resource_model_version` | `str` | Version matching analysis resource counters |
 | `resource_limits` | `mapping` | Published upper rate for every resource/mode |
 | `resource_limit_sources` | `mapping` | Source URL or derivation for each resource limit |
+| `calibration_exempt_modes` | `mapping` | Unmeasured resource modes with mandatory limitation reasons |
+| `precision_support` | `mapping` | Per-precision hardware, software-maturity, evidence, and calibration policy |
 | `profile_revision` | `str` | Immutable resource-profile revision |
 | `audit_evidence` | `mapping` | Hash-bound local hardware audit identity |
 | `ridge_point` | `float` | Arithmetic intensity at roofline knee |

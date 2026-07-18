@@ -79,7 +79,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
 
-
 # ---------------------------------------------------------------------------
 # Op-type classification
 # ---------------------------------------------------------------------------
@@ -132,11 +131,24 @@ def _bits_from_dtype(dtype_str: str) -> Optional[int]:
         return None
     s = dtype_str.replace("torch.", "").lower()
     mapping = {
-        "float64": 64, "double": 64, "complex128": 128, "complex64": 64,
-        "float32": 32, "tf32": 32,
-        "bfloat16": 16, "float16": 16, "half": 16,
-        "int64": 64, "long": 64, "int32": 32, "int": 32,
-        "int16": 16, "short": 16, "int8": 8, "uint8": 8, "byte": 8,
+        "float64": 64,
+        "double": 64,
+        "complex128": 128,
+        "complex64": 64,
+        "float32": 32,
+        "tf32": 32,
+        "bfloat16": 16,
+        "float16": 16,
+        "half": 16,
+        "int64": 64,
+        "long": 64,
+        "int32": 32,
+        "int": 32,
+        "int16": 16,
+        "short": 16,
+        "int8": 8,
+        "uint8": 8,
+        "byte": 8,
         "bool": 1,
     }
     return mapping.get(s)
@@ -150,6 +162,7 @@ def _bits_from_dtype(dtype_str: str) -> Optional[int]:
 @dataclass(frozen=True)
 class AxisKey:
     """Unique identifier for one dim of one operand in one layer."""
+
     layer: str
     role: str
     pos: int
@@ -225,14 +238,15 @@ class BuildContext:
     rank_sizes: Dict[str, int] = field(default_factory=dict)
     """canonical_name → size."""
 
-    role_to_shape_index: Dict[Tuple[str, str], Tuple[str, int]] = field(default_factory=dict)
+    role_to_shape_index: Dict[Tuple[str, str], Tuple[str, int]] = field(
+        default_factory=dict
+    )
     """(layer, role) → ('inputs' or 'outputs', index)."""
 
     diagnostics: List[str] = field(default_factory=list)
 
 
-def _build_role_to_shape_index(layers: Dict[str, dict],
-                                ctx: BuildContext) -> None:
+def _build_role_to_shape_index(layers: Dict[str, dict], ctx: BuildContext) -> None:
     """Map (layer, role) → (which-tensor-shapes-list, index-into-list).
 
     Walks operand keys in YAML insertion order. Input-like roles consume
@@ -358,10 +372,13 @@ def _within_layer_union(ctx: BuildContext) -> None:
                 ctx.uf.union(group[0], a)
 
 
-def _input_like_roles_in_order(operands: dict, layer_name: str,
-                                role_to_shape_index: dict,
-                                tensor_types_inputs: Optional[List[str]] = None,
-                                skip_weight_typed: bool = False) -> List[str]:
+def _input_like_roles_in_order(
+    operands: dict,
+    layer_name: str,
+    role_to_shape_index: dict,
+    tensor_types_inputs: Optional[List[str]] = None,
+    skip_weight_typed: bool = False,
+) -> List[str]:
     """Ordered list of input-like roles (those mapping to tensor_shapes.inputs).
 
     Catches solar's custom input roles (``Target`` for loss functions,
@@ -397,9 +414,9 @@ def _input_like_roles_in_order(operands: dict, layer_name: str,
     return out
 
 
-def _primary_output_role(pred_operands: dict,
-                          role_to_shape_index: dict,
-                          pred_name: str) -> Optional[str]:
+def _primary_output_role(
+    pred_operands: dict, role_to_shape_index: dict, pred_name: str
+) -> Optional[str]:
     """Return the predecessor's primary output role name."""
     for cand in pred_operands:
         if _is_output_role(cand):
@@ -425,7 +442,8 @@ def _cross_layer_union(ctx: BuildContext) -> None:
         # across einsums that AF's pydantic schema rejects.
         tensor_types_inputs = (L.get("tensor_types") or {}).get("inputs") or []
         input_roles = _input_like_roles_in_order(
-            operands, layer_name,
+            operands,
+            layer_name,
             ctx.role_to_shape_index,
             tensor_types_inputs=tensor_types_inputs,
             skip_weight_typed=True,
@@ -521,8 +539,9 @@ def _build_iter_expr_for_layer(ctx: BuildContext, layer_name: str) -> Dict[str, 
     return atomic_to_iter
 
 
-def _projection_for_axis(ctx: BuildContext, key: AxisKey,
-                          atomic_iter_map: Dict[str, str]) -> str:
+def _projection_for_axis(
+    ctx: BuildContext, key: AxisKey, atomic_iter_map: Dict[str, str]
+) -> str:
     """Iterator expression for one operand position."""
     label = ctx.axes[key].label
     atoms = _parse_atoms(label)
@@ -531,8 +550,9 @@ def _projection_for_axis(ctx: BuildContext, key: AxisKey,
     return "+".join(atomic_iter_map[a] for a in atoms)
 
 
-def _bits_for_role(L: dict, role: str,
-                    ctx_idx: Optional[Tuple[str, int]] = None) -> Optional[int]:
+def _bits_for_role(
+    L: dict, role: str, ctx_idx: Optional[Tuple[str, int]] = None
+) -> Optional[int]:
     """Return bits-per-value for one operand role with sensible fallbacks."""
     dtypes = L.get("tensor_dtypes") or {}
     if ctx_idx is None:
@@ -611,7 +631,7 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
                     if input_role_index < len(tensor_types_inputs)
                     else None
                 )
-                is_weight_role = (role_type == "weight")
+                is_weight_role = role_type == "weight"
                 if is_weight_role:
                     tensor_name = next_weight_name()
                     af_rename_key = "weight"
@@ -644,7 +664,9 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
             )
             access: Dict[str, Any] = {
                 "name": tensor_name,
-                "projection": list(projection.values()) if can_demote else dict(projection),
+                "projection": (
+                    list(projection.values()) if can_demote else dict(projection)
+                ),
             }
             if is_output_access:
                 access["output"] = True
@@ -677,8 +699,10 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
             # multi-reads (rare; would require an alias if encountered)
             # still surface as a separate access.
             proj = ta["projection"]
-            key = (ta["name"], tuple(proj) if isinstance(proj, list)
-                    else tuple(sorted(proj.items())))
+            key = (
+                ta["name"],
+                tuple(proj) if isinstance(proj, list) else tuple(sorted(proj.items())),
+            )
             if key in seen_in:
                 continue
             seen_in.add(key)
@@ -760,7 +784,8 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
 
     all_bits = [
         ta.get("bits_per_value")
-        for e in einsums for ta in e["tensor_accesses"]
+        for e in einsums
+        for ta in e["tensor_accesses"]
         if ta.get("bits_per_value") is not None
     ]
     default_bits = max(all_bits) if all_bits else 32
@@ -776,11 +801,17 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
             {
                 "name": "default",
                 "tensor_accesses": [
-                    {"name": "input", "source": "Inputs & Intermediates",
-                     "expected_count": 1},
+                    {
+                        "name": "input",
+                        "source": "Inputs & Intermediates",
+                        "expected_count": 1,
+                    },
                     {"name": "output", "source": "Outputs", "expected_count": 1},
-                    {"name": "weight", "source": "~(input | output)",
-                     "expected_count": 1},
+                    {
+                        "name": "weight",
+                        "source": "~(input | output)",
+                        "expected_count": 1,
+                    },
                 ],
             }
         ]
@@ -818,7 +849,8 @@ def _ghost_scalar_outputs(af: dict) -> None:
     rank_sizes = af["workload"].get("rank_sizes") or {}
     consumed = {
         ta["name"]
-        for e in einsums for ta in e["tensor_accesses"]
+        for e in einsums
+        for ta in e["tensor_accesses"]
         if not ta.get("output")
     }
     for e in einsums:
@@ -829,7 +861,8 @@ def _ghost_scalar_outputs(af: dict) -> None:
                 continue
             proj = out_ta["projection"]
             is_empty = (isinstance(proj, list) and len(proj) == 0) or (
-                isinstance(proj, dict) and len(proj) == 0)
+                isinstance(proj, dict) and len(proj) == 0
+            )
             if not is_empty or out_ta["name"] in consumed:
                 continue
             best_iter = None
@@ -839,7 +872,8 @@ def _ghost_scalar_outputs(af: dict) -> None:
                     continue
                 p = ta["projection"]
                 pairs = (
-                    [(v.upper(), v) for v in p] if isinstance(p, list)
+                    [(v.upper(), v) for v in p]
+                    if isinstance(p, list)
                     else list(p.items())
                 )
                 for rank, it in pairs:
@@ -858,8 +892,16 @@ def _ghost_scalar_outputs(af: dict) -> None:
 # traffic. When ``is_real_einsum: false`` co-occurs with one of these types
 # we drop the op and rewire downstream readers to access the physical root.
 _SHAPE_OP_TYPES: Set[str] = {
-    "transpose", "permute", "contiguous", "squeeze", "unsqueeze",
-    "expand", "__getitem__", "__get__", "view", "reshape",
+    "transpose",
+    "permute",
+    "contiguous",
+    "squeeze",
+    "unsqueeze",
+    "expand",
+    "__getitem__",
+    "__get__",
+    "view",
+    "reshape",
 }
 
 
@@ -893,11 +935,14 @@ class _Alias:
     it came from, or None if introduced (unsqueeze)."""
 
 
-def _derive_pos_mapping(layer_name: str, L: dict,
-                         in_dims: List[str], in_shape: List[int],
-                         out_dims: List[str], out_shape: List[int]
-                         ) -> Optional[Tuple[List[Optional[int]],
-                                              List[List[int]]]]:
+def _derive_pos_mapping(
+    layer_name: str,
+    L: dict,
+    in_dims: List[str],
+    in_shape: List[int],
+    out_dims: List[str],
+    out_shape: List[int],
+) -> Optional[Tuple[List[Optional[int]], List[List[int]]]]:
     """Return (out_to_in, in_to_out) for an elide-able shape op.
 
     Returns None when the rewrite is not safe (e.g. genuine reshape, or
@@ -1043,14 +1088,24 @@ def _derive_pos_mapping(layer_name: str, L: dict,
         i2o: List[List[int]] = [[j] for j in range(n_in)]
         return o2i5, i2o
 
-    # __getitem__ / __get__: only safe when the access selects every
-    # element along every axis (no-op). Detect by exact shape equality.
-    if op_type in ("__getitem__", "__get__"):
+    # torchview emits Tensor.T as ``__get__``.  Tensor.T reverses dimensions;
+    # do this before the exact-shape branch because a square transpose has the
+    # same shape but is not an identity mapping.
+    if op_type == "__get__" and n_in == n_out and in_shape[::-1] == out_shape:
+        o2i_get: List[Optional[int]] = list(reversed(range(n_in)))
+        i2o_get: List[List[int]] = [[] for _ in range(n_in)]
+        for output_axis, input_axis in enumerate(o2i_get):
+            assert input_axis is not None
+            i2o_get[input_axis].append(output_axis)
+        return o2i_get, i2o_get
+
+    # __getitem__: only safe when the access selects every element along every
+    # axis (no-op). Detect by exact shape equality.
+    if op_type == "__getitem__":
         if n_in == n_out and in_shape == out_shape:
             return [i for i in range(n_in)], [[i] for i in range(n_in)]
-        # Same total size but different shape — could be transpose-like
-        # (e.g. `.T` is emitted as __get__ with shape swap). Try the
-        # permutation derivation above.
+        # Same total size but different shape. Try the permutation derivation
+        # above for conservative legacy traces.
         try:
             prod_in = 1
             for s in in_shape:
@@ -1060,8 +1115,11 @@ def _derive_pos_mapping(layer_name: str, L: dict,
                 prod_out *= s
         except Exception:
             return None
-        if prod_in == prod_out and n_in == n_out \
-                and sorted(in_shape) == sorted(out_shape):
+        if (
+            prod_in == prod_out
+            and n_in == n_out
+            and sorted(in_shape) == sorted(out_shape)
+        ):
             used5: Set[int] = set()
             o2i6: List[Optional[int]] = []
             ok = True
@@ -1098,16 +1156,18 @@ def _derive_pos_mapping(layer_name: str, L: dict,
         # sides — they must match in order.
         in_nonunit = [(i, s) for i, s in enumerate(in_shape) if s != 1]
         out_nonunit = [(j, s) for j, s in enumerate(out_shape) if s != 1]
-        if len(in_nonunit) == len(out_nonunit) \
-                and all(a[1] == b[1] for a, b in zip(in_nonunit, out_nonunit)):
+        if len(in_nonunit) == len(out_nonunit) and all(
+            a[1] == b[1] for a, b in zip(in_nonunit, out_nonunit)
+        ):
             o2i7: List[Optional[int]] = [None] * n_out
             for (i, _), (j, _) in zip(in_nonunit, out_nonunit):
                 o2i7[j] = i
             # Pair leftover size-1 input dims to leftover size-1 output
             # dims in order; remaining are introduced (None on out side)
             # or dropped (no entry on out side).
-            unmatched_in = [i for i in range(n_in)
-                             if i not in {x for x in o2i7 if x is not None}]
+            unmatched_in = [
+                i for i in range(n_in) if i not in {x for x in o2i7 if x is not None}
+            ]
             unmatched_out = [j for j in range(n_out) if o2i7[j] is None]
             for k in range(min(len(unmatched_in), len(unmatched_out))):
                 o2i7[unmatched_out[k]] = unmatched_in[k]
@@ -1126,8 +1186,9 @@ def _derive_pos_mapping(layer_name: str, L: dict,
     return None
 
 
-def _build_shape_op_aliases(layers: Dict[str, dict]
-                             ) -> Tuple[Dict[str, _Alias], Set[str], List[str]]:
+def _build_shape_op_aliases(
+    layers: Dict[str, dict],
+) -> Tuple[Dict[str, _Alias], Set[str], List[str]]:
     """Return (alias_table, elided_set, diagnostics).
 
     Walks layers in topological order and records, for each elide-able
@@ -1148,9 +1209,11 @@ def _build_shape_op_aliases(layers: Dict[str, dict]
             continue
 
         operands = L.get("operands") or {}
-        in_roles = [r for r in operands
-                     if _is_input_role(r)
-                     or (not _is_output_role(r) and r != "start")]
+        in_roles = [
+            r
+            for r in operands
+            if _is_input_role(r) or (not _is_output_role(r) and r != "start")
+        ]
         out_roles = [r for r in operands if _is_output_role(r)]
         # Skip multi-input or no-output shape ops.
         if len(in_roles) != 1 or len(out_roles) != 1:
@@ -1181,26 +1244,26 @@ def _build_shape_op_aliases(layers: Dict[str, dict]
                 for s in out_shape:
                     po *= int(s)
             except Exception:
-                diagnostics.append(
-                    f"layer {name!r}: non-integer shape; emit normally")
+                diagnostics.append(f"layer {name!r}: non-integer shape; emit normally")
                 continue
             if pi != po:
                 diagnostics.append(
                     f"layer {name!r}: shape product mismatch "
-                    f"(in={in_shape}, out={out_shape}); emit normally")
+                    f"(in={in_shape}, out={out_shape}); emit normally"
+                )
                 continue
 
         # Detect partial __getitem__ (slice with stride/length != full
         # range). For now, only elide when shapes equate or are a pure
         # permutation (handled inside _derive_pos_mapping).
         # Compute the rewrite.
-        derived = _derive_pos_mapping(name, L, in_dims, in_shape,
-                                       out_dims, out_shape)
+        derived = _derive_pos_mapping(name, L, in_dims, in_shape, out_dims, out_shape)
         if derived is None:
             diagnostics.append(
                 f"layer {name!r} ({op_type}): could not derive a safe "
                 f"projection rewrite (in={in_dims}/{in_shape}, "
-                f"out={out_dims}/{out_shape}); emit normally")
+                f"out={out_dims}/{out_shape}); emit normally"
+            )
             continue
         out_to_in, in_to_out = derived
 
@@ -1225,7 +1288,9 @@ def _build_shape_op_aliases(layers: Dict[str, dict]
         pred_output_tensor_name = (
             (pred_layer.get("tensor_names") or {}).get("outputs") or [None]
         )[0]
-        pred_out_shape_list = (pred_layer.get("tensor_shapes") or {}).get("outputs") or []
+        pred_out_shape_list = (pred_layer.get("tensor_shapes") or {}).get(
+            "outputs"
+        ) or []
         if not pred_out_shape_list:
             continue
         pred_out_shape = list(pred_out_shape_list[0])
@@ -1280,8 +1345,9 @@ def _build_shape_op_aliases(layers: Dict[str, dict]
     return aliases, elided, diagnostics
 
 
-def _apply_shape_op_elision(layers: Dict[str, dict]
-                             ) -> Tuple[Dict[str, dict], List[str]]:
+def _apply_shape_op_elision(
+    layers: Dict[str, dict],
+) -> Tuple[Dict[str, dict], List[str]]:
     """Return a rewritten layers dict with shape ops elided.
 
     For each elide-able layer S:
@@ -1319,7 +1385,7 @@ def _apply_shape_op_elision(layers: Dict[str, dict]
             pred_name = preds[k]
             # Walk the alias chain: if pred itself produces an elided
             # tensor we substitute its root.
-            in_tensor_name = (tensor_names[k] if k < len(tensor_names) else None)
+            in_tensor_name = tensor_names[k] if k < len(tensor_names) else None
             if in_tensor_name is None or in_tensor_name not in aliases:
                 continue
             alias = aliases[in_tensor_name]
@@ -1338,7 +1404,8 @@ def _apply_shape_op_elision(layers: Dict[str, dict]
                     diags.append(
                         f"layer {name!r}: alias-rewrite skipped for role "
                         f"{role!r} — operand width {len(cur_dims)} != alias "
-                        f"width {len(alias.out_to_in)}.")
+                        f"width {len(alias.out_to_in)}."
+                    )
                     continue
                 new_dims: List[Optional[str]] = [None] * len(alias.root_dims)
                 for j, i in enumerate(alias.out_to_in):
@@ -1448,14 +1515,23 @@ def _normalize_operands(layers: Dict[str, dict]) -> List[str]:
                 else:
                     in_roles_existing.append(role)
 
-        def _synthesize(slot: int, role_name: str, slot_shape: List[int],
-                         tmpl_dims: List[str], tmpl_shape: List[int],
-                         suffix: str) -> None:
+        def _synthesize(
+            slot: int,
+            role_name: str,
+            slot_shape: List[int],
+            tmpl_dims: List[str],
+            tmpl_shape: List[int],
+            suffix: str,
+        ) -> None:
             while role_name in operands:
                 role_name += "_x"
-            if (tmpl_dims and tmpl_shape and slot_shape
-                    and len(tmpl_dims) == len(slot_shape)
-                    and len(tmpl_shape) == len(slot_shape)):
+            if (
+                tmpl_dims
+                and tmpl_shape
+                and slot_shape
+                and len(tmpl_dims) == len(slot_shape)
+                and len(tmpl_shape) == len(slot_shape)
+            ):
                 labels = list(tmpl_dims)
                 for d in range(len(labels)):
                     if int(slot_shape[d]) != int(tmpl_shape[d]):
@@ -1465,12 +1541,14 @@ def _normalize_operands(layers: Dict[str, dict]) -> List[str]:
             else:
                 diags.append(
                     f"layer {name!r}: cannot synthesize role {role_name!r} "
-                    f"— no shape info available for slot {slot}.")
+                    f"— no shape info available for slot {slot}."
+                )
                 return
             operands[role_name] = labels
             diags.append(
                 f"layer {name!r}: synthesized {role_name}={labels} "
-                f"for missing slot {slot} (shape={slot_shape}).")
+                f"for missing slot {slot} (shape={slot_shape})."
+            )
 
         # Input slots — only synthesize NON-WEIGHT slots. Weight slots not
         # declared in operands are still correctly emitted as ``W{n}`` by
@@ -1480,24 +1558,40 @@ def _normalize_operands(layers: Dict[str, dict]) -> List[str]:
         # pmapping space and causes OOMs (L2/13: ConvTranspose3d with
         # bias). Real multi-input ops (cat/concat/stack) only need
         # additional non-weight roles.
-        tmpl_in_dims = (list(operands.get(in_roles_existing[0]) or [])
-                        if in_roles_existing else [])
+        tmpl_in_dims = (
+            list(operands.get(in_roles_existing[0]) or []) if in_roles_existing else []
+        )
         tmpl_in_shape = list(in_shapes[0]) if in_shapes else []
         for slot in range(len(in_roles_existing), len(in_types) or n_in_max):
             if slot < len(in_types) and in_types[slot] == "weight":
                 continue
             slot_shape = list(in_shapes[slot]) if slot < len(in_shapes) else []
-            _synthesize(slot, f"Input_{slot}", slot_shape,
-                        tmpl_in_dims, tmpl_in_shape, suffix="s")
+            _synthesize(
+                slot,
+                f"Input_{slot}",
+                slot_shape,
+                tmpl_in_dims,
+                tmpl_in_shape,
+                suffix="s",
+            )
 
         # Output slots.
-        tmpl_out_dims = (list(operands.get(out_roles_existing[0]) or [])
-                         if out_roles_existing else [])
+        tmpl_out_dims = (
+            list(operands.get(out_roles_existing[0]) or [])
+            if out_roles_existing
+            else []
+        )
         tmpl_out_shape = list(out_shapes[0]) if out_shapes else []
         for slot in range(len(out_roles_existing), len(out_shapes)):
             slot_shape = list(out_shapes[slot])
-            _synthesize(slot, f"Output_{slot}", slot_shape,
-                        tmpl_out_dims, tmpl_out_shape, suffix="o")
+            _synthesize(
+                slot,
+                f"Output_{slot}",
+                slot_shape,
+                tmpl_out_dims,
+                tmpl_out_shape,
+                suffix="o",
+            )
 
     return diags
 
@@ -1546,17 +1640,16 @@ def _validate_af_coverage(af: dict, layers: Dict[str, dict]) -> None:
         # remaining preds are non-weight.
         for k in range(len(in_types), len(preds)):
             expected.append(_sanitize(preds[k]))
-        read_names = {ta["name"] for ta in e["tensor_accesses"]
-                      if not ta.get("output")}
+        read_names = {ta["name"] for ta in e["tensor_accesses"] if not ta.get("output")}
         missing = [p for p in expected if p not in read_names]
         if missing:
             errors.append(
                 f"layer {layer_name!r} (einsum {sanitized!r}): non-weight "
                 f"preds {missing} missing from AF tensor_accesses; "
-                f"reads={sorted(read_names)}")
+                f"reads={sorted(read_names)}"
+            )
     if errors:
-        raise RuntimeError(
-            "AF graph coverage check failed:\n  " + "\n  ".join(errors))
+        raise RuntimeError("AF graph coverage check failed:\n  " + "\n  ".join(errors))
 
 
 def _ranks_of_projection(proj: Any) -> Tuple[str, ...]:
@@ -1604,7 +1697,8 @@ def _validate_graph_invariants(af: dict) -> None:
         if len(tset) > 1:
             errors.append(
                 f"tensor {name!r} has inconsistent rank tuples across "
-                f"accesses: {sorted(tset)}")
+                f"accesses: {sorted(tset)}"
+            )
 
     for e in einsums:
         for ta in e["tensor_accesses"]:
@@ -1612,7 +1706,8 @@ def _validate_graph_invariants(af: dict) -> None:
                 if r not in rank_sizes:
                     errors.append(
                         f"einsum {e['name']!r} tensor {ta['name']!r} references "
-                        f"rank {r!r} absent from rank_sizes")
+                        f"rank {r!r} absent from rank_sizes"
+                    )
 
     for e in einsums:
         is_copy = e.get("is_copy_operation")
@@ -1633,11 +1728,11 @@ def _validate_graph_invariants(af: dict) -> None:
                 continue
             errors.append(
                 f"einsum {e['name']!r} reads {nm!r} which has no producer "
-                f"(orphan read)")
+                f"(orphan read)"
+            )
 
     if errors:
-        raise RuntimeError(
-            "AF graph invariant check failed:\n  " + "\n  ".join(errors))
+        raise RuntimeError("AF graph invariant check failed:\n  " + "\n  ".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -1730,10 +1825,12 @@ def build_af_graph_from_dict(einsum_graph: Dict[str, Any]) -> Dict[str, Any]:
     # post-emit per-access bits so the energy fallback for tensors without
     # an explicit ``bits_per_value`` annotation matches the widest precision
     # actually used by the workload.
-    corrected = [ta.get("bits_per_value")
-                  for e in af["workload"]["einsums"]
-                  for ta in e["tensor_accesses"]
-                  if ta.get("bits_per_value") is not None]
+    corrected = [
+        ta.get("bits_per_value")
+        for e in af["workload"]["einsums"]
+        for ta in e["tensor_accesses"]
+        if ta.get("bits_per_value") is not None
+    ]
     if corrected:
         af["workload"]["bits_per_value"]["All"] = max(corrected)
     if ctx.diagnostics:
@@ -1741,9 +1838,9 @@ def build_af_graph_from_dict(einsum_graph: Dict[str, Any]) -> Dict[str, Any]:
     return af
 
 
-def build_af_graph_from_yaml(einsum_graph_yaml: Union[Path, str],
-                              output_path: Optional[Union[Path, str]] = None
-                              ) -> Dict[str, Any]:
+def build_af_graph_from_yaml(
+    einsum_graph_yaml: Union[Path, str], output_path: Optional[Union[Path, str]] = None
+) -> Dict[str, Any]:
     """Build the AccelForge einsum graph from a stage-2 YAML on disk.
 
     Args:

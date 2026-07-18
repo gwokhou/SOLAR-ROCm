@@ -11,6 +11,16 @@ source:
     L1: dbaf8476812194920e405118cc5f4abc65035b79a4307b5ee88fb07666ceed48
     L2: 4a55a4bfbe9a6f9b2ad4c5c5c680977e66926175643739530bf5a8ca3e87cd54
     Quant: aa30e9a66ac2292499eacb1cc73ad789ddc7c5f5808ddb10d9dc211e94560036
+target:
+  architecture_profile: ../arch/RX_9060_XT.yaml
+  # Updated together with the locked-clock resource audit before publishing.
+  architecture_profile_sha256: e415ab14f0992183886d732ad20da06b8346bfb2ef1e88a4de68fd3d02751906
+formal_coverage_requirements:
+  operation: [attention, norm, moe, ssm, conv]
+  dtype: [fp32, bf16, fp8]
+  pass_kind: [forward, backward]
+  dynamic_path: [static_instance, dynamic_shape_small, dynamic_shape_next]
+  input_kind: [random_scalar, random, custom]
 entries:
   - slot: attention_backward_fp32
     config: L1
@@ -46,10 +56,11 @@ entries:
       external_bytes: 6455296
       flops: 0
       resource_work:
-        reduction: {bf16: 1073021}
-        sfu: {bf16: 1073283}
-        valu: {bf16: 3219718}
-      derivation: "For N=1*131*8192 and G=1*131 groups: reduction=N-G, SFU=N+G, VALU=3*N+2*G; bytes are the definition tensor widths only."
+        conversion: {bf16->fp32: 1073152, fp32->bf16: 1073152}
+        reduction: {fp32: 1073021}
+        sfu: {fp32: 1073283}
+        valu: {bf16: 2146304, fp32: 1073414}
+      derivation: "For N=1*131*8192 and G=1*131 groups: the reference explicitly casts N BF16 values to FP32 and N values back; FP32 reduction=N-G, SFU=N+G, and VALU=N+2*G, while BF16 residual/weight multiplies visit 2*N elements. Bytes are the definition tensor widths only."
   - slot: norm_backward_bf16
     config: L1
     problem: 013_fused_residual_rms_norm_backward
@@ -173,8 +184,12 @@ entries:
     golden:
       external_bytes: 125844480
       flops: 30198988800
-      resource_work: {}
-      derivation: "2*M*K*N projection FLOPs; official reference declares E4M3FN block scaling."
+      resource_work:
+        conversion: {bf16->fp32: 60948480, fp32->bf16: 1966080, fp32->fp8: 60948480, fp8->fp32: 60948480}
+        mfma: {fp8->fp32: 30198988800}
+        reduction: {fp32: 60929520}
+        valu: {fp32: 245797920}
+      derivation: "2*M*K*N OCP-FP8 projection FLOPs plus exact block-scale reduction, VALU, and conversion counters."
   - slot: nvfp4_projection
     config: Quant
     problem: 024_nvfp4_attention_output_projection

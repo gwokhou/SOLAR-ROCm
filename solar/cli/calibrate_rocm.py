@@ -30,6 +30,13 @@ def _build_probes(matrix_size: int) -> dict[str, ResourceProbe]:
     bf16_b = fp16_b.to(torch.bfloat16)
     fp32_a = fp16_a.float()
     fp32_b = fp16_b.float()
+    fp8_scale = torch.ones((), device="cuda", dtype=torch.float32)
+    fp8_e4m3_a = fp16_a.to(torch.float8_e4m3fn)
+    fp8_e4m3_b = fp16_b.to(torch.float8_e4m3fn).T
+    fp8_e5m2_a = fp16_a.to(torch.float8_e5m2)
+    fp8_e5m2_b = fp16_b.to(torch.float8_e5m2).T
+    int8_a = torch.randint(-8, 8, (n, n), device="cuda", dtype=torch.int8)
+    int8_b = torch.randint(-8, 8, (n, n), device="cuda", dtype=torch.int8)
     vector_n = max(n * n, 1 << 20)
     vector = torch.randn((vector_n,), device="cuda", dtype=torch.float32)
     vector_b = torch.randn_like(vector)
@@ -50,6 +57,36 @@ def _build_probes(matrix_size: int) -> dict[str, ResourceProbe]:
         ),
         "mfma_fp32_fp32": ResourceProbe(
             lambda: torch.mm(fp32_a, fp32_b), 2.0 * n**3, "mfma", "fp32->fp32"
+        ),
+        "mfma_fp8_e4m3_fp32": ResourceProbe(
+            lambda: torch._scaled_mm(
+                fp8_e4m3_a,
+                fp8_e4m3_b,
+                fp8_scale,
+                fp8_scale,
+                out_dtype=torch.float32,
+            ),
+            2.0 * n**3,
+            "mfma",
+            "fp8->fp32",
+        ),
+        "mfma_fp8_e5m2_fp32": ResourceProbe(
+            lambda: torch._scaled_mm(
+                fp8_e5m2_a,
+                fp8_e5m2_b,
+                fp8_scale,
+                fp8_scale,
+                out_dtype=torch.float32,
+            ),
+            2.0 * n**3,
+            "mfma",
+            "fp8->fp32",
+        ),
+        "mfma_int8_int32": ResourceProbe(
+            lambda: torch._int_mm(int8_a, int8_b),
+            2.0 * n**3,
+            "mfma",
+            "int8->int32",
         ),
         "valu_fp32": ResourceProbe(
             lambda: torch.add(vector, vector_b), float(vector_n), "valu", "fp32"
@@ -80,6 +117,18 @@ def _build_probes(matrix_size: int) -> dict[str, ResourceProbe]:
             float(vector_n),
             "conversion",
             "fp32->fp16",
+        ),
+        "conversion_fp32_fp8": ResourceProbe(
+            lambda: vector.to(torch.float8_e4m3fn),
+            float(vector_n),
+            "conversion",
+            "fp32->fp8",
+        ),
+        "conversion_fp8_fp32": ResourceProbe(
+            lambda: vector.to(torch.float8_e4m3fn).float(),
+            float(vector_n),
+            "conversion",
+            "fp8->fp32",
         ),
         "memory_hbm": ResourceProbe(
             lambda: memory_out.copy_(vector),

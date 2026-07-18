@@ -109,7 +109,19 @@ The RX 9060 XT manifest and checked report are:
 They pin the upstream dataset revision and every selected row/workload hash.
 The audit executes each compatible reference in an isolated process, verifies
 formal artifacts against independently written FLOP/byte/resource goldens,
-and keeps unsupported quantization cases as explicit incompatibilities. Run:
+keeps unsupported quantization cases as explicit incompatibilities, and
+rejects artifacts built for a different architecture profile. First rebuild
+the pinned formal artifacts:
+
+```bash
+solar-build-sol-execbench-corpus \
+  configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml \
+  --dataset-root /path/to/pinned-official-dataset \
+  --output /tmp/formal-artifacts \
+  --orojenesis-home /path/to/pinned/Orojenesis
+```
+
+Then run the aggregate audit:
 
 ```bash
 solar-audit-sol-execbench-corpus \
@@ -122,7 +134,10 @@ solar-audit-sol-execbench-corpus \
 The aggregate corpus gate requires operation-family, precision,
 forward/backward, dynamic-shape, and structured-input coverage. It does not
 claim that every operation supports every pass or dtype. Unsupported AMD
-libraries/formats and deterministic OOMs are recorded without a fallback.
+libraries/formats and deterministic OOMs are recorded without a fallback. The
+checked RX 9060 XT report contains nine formally attested compatible workloads,
+including OCP FP8, one explicit NVFP4 incompatibility, empty missing-coverage
+lists, and `gate.passed: true`.
 
 ## Executable ROCm correctness
 

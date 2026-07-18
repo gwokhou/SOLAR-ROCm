@@ -146,8 +146,9 @@ manifest.
 
 The pinned RX 9060 XT official representative corpus is documented in
 [the ROCm benchmark guide](docs/ROCM_BENCHMARKING.md). Its checked audit has
-eight replayable formal workloads and two explicit NVIDIA FP8/NVFP4
-incompatibilities; no dtype, shape, device, or backend fallback is permitted.
+nine replayable formal workloads, including native OCP FP8, and one explicit
+NVFP4 incompatibility. The gate binds every artifact to the audited gfx1200
+profile and permits no dtype, shape, device, or backend fallback.
 
 ## Output File Formats
 

@@ -80,14 +80,20 @@ correctness, score, capabilities, `bound_audit`, and structured failure states.
 
 ## RX 9060 XT resource audit
 
-The bundled `gfx1200` profile revision `rx9060xt-amd-resource-v1` binds its
+The bundled `gfx1200` profile revision `rx9060xt-amd-resource-v2` binds its
 published limits to the locked-clock local audit at
 `configs/arch/evidence/RX_9060_XT_resource_audit.yaml` (SHA-256
-`ca91342d312ef98c64b60ff081c8a318df4bd896c4f5c190995690c76c0a5522`).
+`11b8adc226b3b4f0d52830dde6fd112b1b376adffa81f1204514fa8d34114c1b`).
 The evidence records ROCm/device identity, source hashes, clock state, raw
 timings, stability, and measured-to-published ratios for every resource plus
-HBM. Measured calibration is an audit of the conservative published ceilings;
-it never replaces a formal denominator.
+HBM. Its `precision_support` matrix separates Radeon PyTorch production types,
+rocWMMA/library support with a verified local framework path, and ISA-only
+types. Required locked-clock probes cover FP32, FP16, BF16, both gfx1200 OCP
+FP8 encodings, and INT8. INT4 is not probed: RDNA4 exposes IU4 WMMA, but ROCm
+7.2 rocWMMA has no INT4 type and PyTorch 2.11 has no validated gfx1200 INT4
+matrix API, so its published peak is explicitly source-only and exempt.
+Measured calibration audits conservative published ceilings; it never replaces
+a formal denominator. See [the precision support matrix](QUANT_SUPPORT.md).
 
 Reproduce it on the same GPU with:
 
@@ -106,12 +112,28 @@ No cross-hardware extrapolation is claimed by the bundled local audit.
 `configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml` pins ten entries from
 `nvidia/SOL-ExecBench` revision
 `63699402f003496acc3af4eb534a5304a8ac1ea9`, including attention, norm, MoE,
-SSM, convolution, BF16/FP32, forward/backward, dynamic shapes, and structured
-inputs. Eight compatible entries have replayable formal artifacts and
-independent FLOP, byte, and resource-counter goldens. The official NVIDIA
-E4M3FN FP8 and NVFP4 entries are retained as explicit
-`unsupported_quantization_format` results; they are not converted to AMD FNUZ,
-shrunk, sent to CPU, or otherwise replaced.
+SSM, convolution, FP32/BF16/OCP FP8, forward/backward, dynamic shapes, and
+structured inputs. Nine compatible entries have replayable formal artifacts
+and independent FLOP, byte, and resource-counter goldens. The official OCP
+E4M3 block-scale workload is formally scored as native gfx1200 FP8 with FP32
+accumulation. NVFP4 is retained as an explicit
+`unsupported_quantization_format` result; it is not converted, shrunk, sent to
+CPU, or otherwise replaced.
+
+Rebuild all selected source-to-SOL artifacts from that exact revision with:
+
+```bash
+solar-build-sol-execbench-corpus \
+  configs/corpus/RX_9060_XT_SOL_EXECBENCH.yaml \
+  --dataset-root /path/to/pinned-official-dataset \
+  --output /tmp/RX_9060_XT_formal_artifacts \
+  --orojenesis-home /path/to/pinned/Orojenesis
+```
+
+The builder groups multiple workloads from one problem, uses the manifest's
+hash-bound architecture profile, and writes a `build-index.yaml`. Exit status 2
+from the underlying per-problem builder is accepted only as terminal
+incompatibility evidence; failed or unchecked work stops the batch.
 
 Given an independently obtained copy of that exact official revision, audit it
 with:
@@ -127,7 +149,11 @@ solar-audit-sol-execbench-corpus \
 The checked local result is
 `configs/corpus/evidence/RX_9060_XT_SOL_EXECBENCH_audit.yaml`. Every
 compatibility record must contain `fallbacks_used: []`; incompatibility and OOM
-are outcomes to record, not reasons to mutate the workload.
+are outcomes to record, not reasons to mutate the workload. The checked gate is
+`passed: true`: all ten entries have terminal evidence, all nine compatible
+entries are formally attested, and every required operation/dtype/pass/dynamic
+path/input-kind bucket has at least one formal artifact. The report also binds
+the raw profile SHA-256 and canonical architecture hash.
 
 ## Timing profiles
 

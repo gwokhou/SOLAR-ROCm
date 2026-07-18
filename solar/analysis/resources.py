@@ -228,6 +228,7 @@ def classify_layer_resources(
     macs: int,
     fallback_precision: str,
     strict: bool,
+    compute_precision: str | None = None,
 ) -> dict[str, Any]:
     """Return deterministic resource work for one executable graph layer."""
     semantic = layer.get("semantic_op") or {}
@@ -243,7 +244,9 @@ def classify_layer_resources(
     output_elements = _elements(output_shapes)
     inputs = list((layer.get("tensor_dtypes") or {}).get("inputs") or [])
     outputs = list((layer.get("tensor_dtypes") or {}).get("outputs") or [])
-    dtype = inputs[0] if inputs else (outputs[0] if outputs else fallback_precision)
+    dtype = compute_precision or (
+        inputs[0] if inputs else (outputs[0] if outputs else fallback_precision)
+    )
     mode = _mode(dtype, fallback_precision)
     output_n = max(output_elements, default=0)
     input_n = max(input_elements, default=0)
@@ -375,10 +378,11 @@ def classify_layer_resources(
             else None
         )
         groups = _reduction_groups(shape, semantic)
+        combines = max(0, input_n - groups)
         add(
             "reduction",
             mode,
-            max(0, input_n - groups),
+            combines,
             "input elements minus reduction groups",
         )
         if target == "mean":
@@ -390,6 +394,14 @@ def classify_layer_resources(
                 input_n + max(output_n, groups),
                 "exponential and logarithm",
             )
+        elif combines == 0:
+            return {
+                "model_version": RESOURCE_MODEL_VERSION,
+                "work": {},
+                "classification": "exempt",
+                "exemption_reason": "degenerate_single_element_reduction",
+                "formulas": [],
+            }
     elif target in _SFU_OPS:
         add("sfu", mode, output_n, "one special-function result per output element")
     elif target in _COMPOSITE_SFU_OPS:
